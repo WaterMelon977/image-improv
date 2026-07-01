@@ -1,9 +1,9 @@
 import json
 import re
-from anthropic import Anthropic
+from openai import OpenAI
 from app.core.config import settings
 
-client = Anthropic(api_key=settings.anthropic_api_key)
+client = OpenAI(api_key=settings.openai_api_key)
 
 
 def generate_themes(company: dict, topic: str) -> list[dict]:
@@ -45,10 +45,8 @@ Return ONLY valid JSON:
   ]
 }}"""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        thinking={"type": "enabled", "budget_tokens": 1500},
+    response = client.chat.completions.create(
+        model="gpt-5-mini",
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -90,10 +88,8 @@ Return ONLY valid JSON:
   ]
 }}"""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        thinking={"type": "enabled", "budget_tokens": 1000},
+    response = client.chat.completions.create(
+        model="gpt-5-mini",
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -170,10 +166,7 @@ def select_best_product(products: list[dict], theme: dict) -> dict | None:
 # -- helpers --
 
 def _extract_text(response) -> str:
-    for block in response.content:
-        if block.type == "text":
-            return block.text
-    return ""
+    return response.choices[0].message.content or ""
 
 
 def _parse_json(text: str) -> dict:

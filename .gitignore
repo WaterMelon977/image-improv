@@ -1,0 +1,11 @@
+# Environments
+.env
+
+# Python virtual environment
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Local data
+data/images/

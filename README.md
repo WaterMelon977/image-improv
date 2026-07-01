@@ -6,38 +6,26 @@ Telegram-driven AI product image generation. FastAPI + Flux Kontext + Claude Son
 
 ## Setup
 
-### 1. Start PostgreSQL
-```bash
-docker-compose up -d
-```
-
-### 2. Create virtual environment
-```bash
+# 1. venv + deps
 python -m venv venv
-source venv/bin/activate   # windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
-```
 
-### 3. Configure environment
-```bash
+# 2. copy .env with your Supabase DATABASE_URL
 cp .env.example .env
-# fill in your API keys in .env
-```
+# fill in: DATABASE_URL=postgresql://user:password@db.supabase.co:5432/postgres
 
-### 4. Start the API server
-```bash
+# 3. start server
 uvicorn app.main:app --reload --port 8000
-```
 
-### 5. Install CLI (in a separate terminal, same venv)
-```bash
-# run directly
+# 4. run CLI
+python cli/pocc.py ingest --url https://example.com
 python cli/pocc.py --help
 
 # or install as command
 pip install -e .
 pocc --help
-```
+
 
 ---
 

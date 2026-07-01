@@ -5,14 +5,14 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 from colorthief import ColorThief
-from anthropic import Anthropic
+from openai import OpenAI
 from app.core.config import settings
 from pathlib import Path
 import json
 import uuid
 
 
-client = Anthropic(api_key=settings.anthropic_api_key)
+client = OpenAI(api_key=settings.openai_api_key)
 
 
 # -- firecrawl --
@@ -55,10 +55,13 @@ def extract_logo_url(html: str, base_url: str, metadata: dict) -> str | None:
     """try selectors in order, return first found logo url"""
     from urllib.parse import urljoin, urlparse
 
+    def clean_url(u: str) -> str:
+        return u.split("?")[0] if u else u
+
     # 1: og:image if it contains 'logo'
     og = metadata.get("og:image", "")
     if og and "logo" in og.lower():
-        return og
+        return clean_url(og)
 
     # 2: dom selectors
     soup = BeautifulSoup(html, "html.parser")
@@ -67,16 +70,16 @@ def extract_logo_url(html: str, base_url: str, metadata: dict) -> str | None:
         if el:
             src = el.get("src") or el.get("data-src")
             if src:
-                return urljoin(base_url, src)
+                return clean_url(urljoin(base_url, src))
 
     # 3: apple-touch-icon
     tag = soup.find("link", rel="apple-touch-icon")
     if tag and tag.get("href"):
-        return urljoin(base_url, tag["href"])
+        return clean_url(urljoin(base_url, tag["href"]))
 
     # 4: favicon
     parsed = urlparse(base_url)
-    return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+    return clean_url(f"{parsed.scheme}://{parsed.netloc}/favicon.ico")
 
 
 def download_and_process_logo(logo_url: str, company_slug: str) -> tuple[str, str]:
@@ -87,10 +90,41 @@ def download_and_process_logo(logo_url: str, company_slug: str) -> tuple[str, st
     image_dir = settings.get_image_dir() / "logos"
     image_dir.mkdir(exist_ok=True)
 
+    # remove query parameters before downloading
+    logo_url = logo_url.split("?")[0]
+
     resp = requests.get(logo_url, timeout=15)
     resp.raise_for_status()
 
-    img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+    # check if SVG
+    is_svg = logo_url.lower().endswith(".svg") or "image/svg" in resp.headers.get("Content-Type", "")
+
+    if is_svg:
+        # Save the SVG as-is first to the filesystem
+        svg_path = image_dir / f"{company_slug}_logo.svg"
+        with open(svg_path, "wb") as f:
+            f.write(resp.content)
+
+        # Convert SVG to PNG for Pillow operations
+        png_data = None
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(stream=resp.content, filetype="svg")
+            page = doc[0]
+            pix = page.get_pixmap(dpi=150)
+            png_data = pix.tobytes("png")
+        except Exception as e_fitz:
+            try:
+                import cairosvg
+                png_data = cairosvg.svg2png(bytestring=resp.content)
+            except Exception as e_cairo:
+                raise RuntimeError(
+                    f"Failed to convert SVG to PNG. Tested PyMuPDF ({e_fitz}) and CairoSVG ({e_cairo})."
+                )
+
+        img = Image.open(io.BytesIO(png_data)).convert("RGBA")
+    else:
+        img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
 
     # remove background if the image has no transparency (likely jpg)
     has_transparency = any(px[3] < 255 for px in img.getdata())
@@ -216,19 +250,12 @@ Rules:
 Website content:
 {markdown[:12000]}"""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        thinking={"type": "enabled", "budget_tokens": 2000},
+    response = client.chat.completions.create(
+        model="gpt-5-mini",
         messages=[{"role": "user", "content": prompt}]
     )
 
-    # extract text from response (skip thinking blocks)
-    text = ""
-    for block in response.content:
-        if block.type == "text":
-            text = block.text
-            break
+    text = response.choices[0].message.content or ""
 
     # parse json from response
     match = re.search(r'\{.*\}', text, re.DOTALL)

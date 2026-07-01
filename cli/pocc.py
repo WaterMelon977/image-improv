@@ -122,12 +122,19 @@ def ingest(url: str):
     colors = result.get("brand_colors", {})
     color_str = " | ".join(f"{k}: {v}" for k, v in colors.items() if v)
 
+    if result.get("logo_saved"):
+        logo_status = "[green]saved[/green]"
+    elif result.get("logo_url"):
+        logo_status = f"[yellow]download failed[/yellow] (URL: {result['logo_url']})"
+    else:
+        logo_status = "[red]not found[/red]"
+
     console.print(Panel(
         f"[green]Company saved.[/green]\n\n"
         f"Name:      [bold]{result['company_name']}[/bold]\n"
         f"Industry:  {result.get('industry', 'N/A')}\n"
         f"Products:  {result.get('products_found', 0)} found\n"
-        f"Logo:      {'saved' if result.get('logo_saved') else 'not found'}\n"
+        f"Logo:      {logo_status}\n"
         f"Colors:    {color_str or 'not detected'}\n\n"
         f"[bold cyan]Reference this company as:[/bold cyan] [yellow]{result['company_slug']}[/yellow]\n\n"
         f"Next: [dim]pocc campaign --company {result['company_slug']} --topic \"your topic\"[/dim]",

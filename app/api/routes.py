@@ -126,6 +126,7 @@ async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
         "industry": company.industry,
         "products_found": len(data.get("products", [])),
         "logo_saved": bool(company.logo_local_path),
+        "logo_url": company.logo_url,
         "brand_colors": colors,
         "message": f"Company loaded. Reference as: {company.slug}"
     }
