@@ -1,10 +1,13 @@
 import uuid
 import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from pathlib import Path
+
+logger = logging.getLogger("app.api.routes")
 
 from app.models.db import get_db, Company, Product, CampaignSession
 from app.services.ingestion import ingest_company
@@ -65,9 +68,11 @@ def _get_session_or_404(session_id: str, db: Session) -> CampaignSession:
 
 @router.post("/ingest")
 async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
+    logger.info("POST /ingest called with URL: %s", req.url)
     # check if already ingested
     existing = db.query(Company).filter(Company.website_url == req.url).first()
     if existing:
+        logger.info("Company already ingested: %s (slug=%s)", existing.name, existing.slug)
         return {
             "status": "already_exists",
             "company_name": existing.name,
@@ -76,10 +81,15 @@ async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
         }
 
     # run full ingestion pipeline
-    data = await ingest_company(req.url)
-    intel = data["intelligence"]
-    colors = data["colors"]
+    try:
+        data = await ingest_company(req.url)
+        intel = data["intelligence"]
+        colors = data["colors"]
+    except Exception as e:
+        logger.error("Ingestion failed for URL %s: %s", req.url, str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
+    logger.debug("Ingestion successful. Saving company to database: %s", intel["company_name"])
     # save company to db
     company = Company(
         id=str(uuid.uuid4()),
@@ -105,6 +115,7 @@ async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
     db.flush()  # get company.id before products
 
     # save products
+    logger.debug("Saving %d products for company to database...", len(data.get("products", [])))
     for p_data in data.get("products", []):
         product = Product(
             id=p_data.get("_id", str(uuid.uuid4())),
@@ -118,6 +129,7 @@ async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
         db.add(product)
 
     db.commit()
+    logger.info("Database commit successful. Company %s (slug=%s) fully saved.", company.name, company.slug)
 
     return {
         "status": "success",
@@ -132,6 +144,7 @@ async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
     }
 
 
+
 # ============================================================
 # POST /campaign
 # generate 5 campaign themes for a company + topic
@@ -139,10 +152,12 @@ async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
 
 @router.post("/campaign")
 def campaign(req: CampaignRequest, db: Session = Depends(get_db)):
+    logger.info("POST /campaign called with company_slug: %s, topic: '%s'", req.company_slug, req.topic)
     company = _get_company_or_404(req.company_slug, db)
     products = db.query(Product).filter(Product.company_id == company.id).all()
 
     if not products:
+        logger.error("No products found in DB for company: %s", company.name)
         raise HTTPException(status_code=400, detail="No products found for this company. Re-run ingestion.")
 
     # build lightweight company dict for AI calls
@@ -156,6 +171,7 @@ def campaign(req: CampaignRequest, db: Session = Depends(get_db)):
         ]
     }
 
+    logger.debug("Generating themes for company %s", company.name)
     themes = generate_themes(company_dict, req.topic)
 
     # create session to track this campaign
@@ -168,6 +184,7 @@ def campaign(req: CampaignRequest, db: Session = Depends(get_db)):
     )
     db.add(session)
     db.commit()
+    logger.info("Campaign session %s created with status themes_generated", session.id)
 
     return {
         "session_id": session.id,
@@ -184,15 +201,18 @@ def campaign(req: CampaignRequest, db: Session = Depends(get_db)):
 
 @router.post("/select")
 def select_theme(req: SelectThemeRequest, db: Session = Depends(get_db)):
+    logger.info("POST /select called with session_id: %s, theme_number: %d", req.session_id, req.theme_number)
     session = _get_session_or_404(req.session_id, db)
     company = db.query(Company).filter(Company.id == session.company_id).first()
     products = db.query(Product).filter(Product.company_id == company.id).all()
 
     themes = session.themes
     if not themes or req.theme_number < 1 or req.theme_number > len(themes):
+        logger.error("Invalid theme number requested: %d (available: 1-%d)", req.theme_number, len(themes) if themes else 0)
         raise HTTPException(status_code=400, detail=f"Invalid theme number. Choose 1-{len(themes)}.")
 
     chosen_theme = themes[req.theme_number - 1]
+    logger.info("Selected theme: %s", chosen_theme.get("theme_name"))
 
     # auto-select best product for this theme
     products_dicts = [
@@ -204,15 +224,20 @@ def select_theme(req: SelectThemeRequest, db: Session = Depends(get_db)):
         }
         for p in products
     ]
+    logger.debug("Invoking product selection algorithm...")
     best_product = select_best_product(products_dicts, chosen_theme)
     if not best_product:
+        logger.error("Product selection algorithm failed to find a candidate product")
         raise HTTPException(status_code=400, detail="No suitable product found for this theme.")
+
+    logger.info("Selected best product: %s (id=%s)", best_product["name"], best_product["id"])
 
     company_dict = {
         "name": company.name,
         "brand_voice": company.brand_voice or [],
     }
 
+    logger.debug("Generating 3 image ideas via campaign service...")
     ideas = generate_image_ideas(company_dict, chosen_theme, best_product)
 
     # update session
@@ -221,6 +246,7 @@ def select_theme(req: SelectThemeRequest, db: Session = Depends(get_db)):
     session.image_ideas = ideas
     session.status = "ideas_generated"
     db.commit()
+    logger.info("Campaign session %s updated with ideas and product mapping. Status: ideas_generated", session.id)
 
     return {
         "session_id": session.id,
@@ -235,6 +261,7 @@ def select_theme(req: SelectThemeRequest, db: Session = Depends(get_db)):
     }
 
 
+
 # ============================================================
 # POST /image
 # select idea → flux edit → analyze → logo placement → final image
@@ -242,20 +269,25 @@ def select_theme(req: SelectThemeRequest, db: Session = Depends(get_db)):
 
 @router.post("/image")
 async def generate_image(req: GenerateImageRequest, idea_number: int, db: Session = Depends(get_db)):
+    logger.info("POST /image called for session_id: %s, idea_number: %d", req.session_id, idea_number)
     session = _get_session_or_404(req.session_id, db)
     company = db.query(Company).filter(Company.id == session.company_id).first()
     product = db.query(Product).filter(Product.id == session.selected_product_id).first()
 
     if not product:
+        logger.error("No product selected for session: %s", session.id)
         raise HTTPException(status_code=400, detail="No product selected. Run /select first.")
 
     ideas = session.image_ideas or []
     if idea_number < 1 or idea_number > len(ideas):
+        logger.error("Invalid idea number requested: %d (available: 1-%d)", idea_number, len(ideas))
         raise HTTPException(status_code=400, detail=f"Invalid idea number. Choose 1-{len(ideas)}.")
 
     chosen_idea = ideas[idea_number - 1]
+    logger.info("Generating image using idea: '%s' for product '%s'", chosen_idea, product.name)
 
     if not product.master_image_path or not Path(product.master_image_path).exists():
+        logger.error("Master image path does not exist or is missing: %s", product.master_image_path)
         raise HTTPException(
             status_code=400,
             detail=f"No master image found for product '{product.name}'. "
@@ -283,6 +315,7 @@ async def generate_image(req: GenerateImageRequest, idea_number: int, db: Sessio
     session.flux_prompt = flux_prompt
     session.status = "flux_running"
     db.commit()
+    logger.info("Session %s updated to status flux_running", session.id)
 
     # call flux
     try:
@@ -292,6 +325,7 @@ async def generate_image(req: GenerateImageRequest, idea_number: int, db: Sessio
             session_id=session.id
         )
     except Exception as e:
+        logger.error("Flux generation failed for session %s: %s", session.id, str(e), exc_info=True)
         session.status = "failed"
         session.error_message = str(e)
         db.commit()
@@ -301,16 +335,20 @@ async def generate_image(req: GenerateImageRequest, idea_number: int, db: Sessio
     session.flux_job_id = flux_job_id
     session.status = "flux_done"
     db.commit()
+    logger.info("Flux job %s completed. Raw image saved to %s", flux_job_id, raw_path)
 
     # analyze generated image for logo placement
+    logger.debug("Analyzing generated image for logo placement...")
     placement = analyze_image_for_logo_placement(raw_path)
 
     # extract dominant colors for reporting
+    logger.debug("Extracting dominant colors...")
     dominant_colors = extract_dominant_colors(raw_path)
 
     # composite logo if available
     final_path = raw_path  # default: no logo
     if company.logo_local_path and Path(company.logo_local_path).exists():
+        logger.info("Logo found at %s. Compositing onto image...", company.logo_local_path)
         final_path = composite_logo(
             base_image_path=raw_path,
             logo_path=company.logo_local_path,
@@ -319,12 +357,14 @@ async def generate_image(req: GenerateImageRequest, idea_number: int, db: Sessio
         )
         session.status = "logo_placed"
     else:
+        logger.warning("No local logo found at %s. Skipping compositing.", company.logo_local_path)
         session.status = "done_no_logo"
 
     session.final_image_path = final_path
     session.logo_placement = placement
     session.status = "done"
     db.commit()
+    logger.info("Image processing complete for session %s. Status set to done.", session.id)
 
     return {
         "session_id": session.id,
@@ -347,6 +387,7 @@ async def generate_image(req: GenerateImageRequest, idea_number: int, db: Sessio
 
 @router.get("/jobs/{session_id}/status")
 def job_status(session_id: str, db: Session = Depends(get_db)):
+    logger.debug("GET /jobs/%s/status called", session_id)
     session = _get_session_or_404(session_id, db)
     return {
         "session_id": session_id,
@@ -362,17 +403,23 @@ def job_status(session_id: str, db: Session = Depends(get_db)):
 
 @router.get("/jobs/{session_id}/image")
 def serve_image(session_id: str, db: Session = Depends(get_db)):
+    logger.info("GET /jobs/%s/image called", session_id)
     session = _get_session_or_404(session_id, db)
     if not session.final_image_path or not Path(session.final_image_path).exists():
+        logger.warning("Final image file not found or not ready yet for session: %s", session_id)
         raise HTTPException(status_code=404, detail="Final image not ready yet.")
+    logger.debug("Serving final image file: %s", session.final_image_path)
     return FileResponse(session.final_image_path, media_type="image/png")
 
 
 @router.get("/jobs/{session_id}/raw")
 def serve_raw(session_id: str, db: Session = Depends(get_db)):
+    logger.info("GET /jobs/%s/raw called", session_id)
     session = _get_session_or_404(session_id, db)
     if not session.raw_image_path or not Path(session.raw_image_path).exists():
+        logger.warning("Raw image file not found or not ready yet for session: %s", session_id)
         raise HTTPException(status_code=404, detail="Raw image not ready.")
+    logger.debug("Serving raw image file: %s", session.raw_image_path)
     return FileResponse(session.raw_image_path, media_type="image/png")
 
 
@@ -383,7 +430,9 @@ def serve_raw(session_id: str, db: Session = Depends(get_db)):
 
 @router.get("/companies")
 def list_companies(db: Session = Depends(get_db)):
+    logger.info("GET /companies called")
     companies = db.query(Company).all()
+    logger.debug("Retrieved %d companies from DB", len(companies))
     return [
         {
             "slug": c.slug,
@@ -393,3 +442,4 @@ def list_companies(db: Session = Depends(get_db)):
         }
         for c in companies
     ]
+

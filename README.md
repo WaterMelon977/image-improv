@@ -128,11 +128,20 @@ pocc/
 
 ---
 
+## Logging
+The CLI includes structured logging output:
+- **File log**: All command operations are logged in detail at the `DEBUG` level inside `./pocc.log` in the format:
+  `[timestamp] [level] [command] message` (e.g., `[2025-07-04 12:30:45] [INFO] [ingest] Company saved: spicen (slug=spicen)`)
+- **Console feedback**: Crucial execution steps and warnings/errors are streamed to stderr to keep stdout clean.
+- **Timing**: The execution time is tracked and logged upon completion of each command.
+
+---
+
 ## Troubleshooting
 
 **Flux returns blank image:** Lower `guidance_scale` in `flux.py` (try 2.5).
 
-**Logo not found:** Check `data/images/logos/` — if empty, the website may block scrapers. Manually place a `{company_slug}_logo.png` there and update `logo_local_path` in the DB.
+**Logo download failed / SVG support:** Logo URLs are automatically cleaned of query parameters prior to download. If the logo is an SVG, it is saved directly as-is to `data/images/logos/{company_slug}_logo.svg` and automatically rasterized to a PNG using `pymupdf` (fitz) so that no native Cairo C-libraries are required on Windows.
 
 **rembg slow on first run:** It downloads the U2Net model (~170MB). Subsequent runs are fast.
 

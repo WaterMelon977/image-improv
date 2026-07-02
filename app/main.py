@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from app.api.routes import router
 from app.models.db import create_tables
+from app.core.logging import setup_backend_logging
+
+setup_backend_logging()
 
 app = FastAPI(
     title="POCC — Product Creative Platform",

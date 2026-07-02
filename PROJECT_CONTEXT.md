@@ -273,12 +273,12 @@ List all ingested companies.
 **Firecrawl + AI extraction pipeline:**
 
 1. `scrape_url(url)` — calls Firecrawl API, returns markdown + HTML + metadata
-2. `extract_logo_url(html, base_url, metadata)` — tries 4 methods:
+2. `extract_logo_url(html, base_url, metadata)` — tries 4 methods (strips query parameters from returned URLs):
    - og:image if contains 'logo'
    - DOM selectors (img.logo, a.logo img, etc.)
    - link rel=apple-touch-icon
    - fallback: /favicon.ico
-3. `download_and_process_logo(logo_url, company_slug)` — downloads, removes background (rembg if JPG), converts to RGBA PNG, computes brightness (dark/light)
+3. `download_and_process_logo(logo_url, company_slug)` — downloads logo (if SVG, saves as `.svg` to local filesystem and converts to PNG using `pymupdf`), removes background (rembg if JPG), converts to RGBA PNG, computes brightness (dark/light)
 4. `extract_brand_colors(html, logo_path)` — extracts from CSS vars + meta theme-color + logo palette (colorthief)
 5. `download_product_image(image_url, product_id)` — downloads first product image as master PNG
 6. `extract_company_intelligence(markdown)` — Claude Sonnet call with thinking enabled, structured JSON schema
@@ -299,9 +299,9 @@ List all ingested companies.
 **Flux Kontext API integration:**
 
 1. `generate_with_flux(master_image_path, prompt, session_id)` — async function:
-   - Loads master image as base64
-   - POST to `https://api.us1.bfl.ai/v1/flux-kontext-pro`
-   - Polls `get_result` every 4 seconds (up to 2 min timeout)
+   - Scales the master image down to a maximum of 1MP (1,000,000 pixels) if it exceeds 1MP, then loads it as base64
+   - POST to `https://api.bfl.ai/v1/flux-2-pro`
+   - Polls BFL using the returned `polling_url` (or defaults to `get_result`) every 4 seconds (up to 2 min timeout)
    - Downloads result image
    - Saves as `{session_id}_raw.png`
    - Returns `(raw_path, flux_job_id)`
@@ -333,6 +333,21 @@ List all ingested companies.
 ## CLI Usage
 
 All commands are in `cli/pocc.py` using Click + Rich for pretty output.
+
+### CLI Logging
+- **Log file:** `./pocc.log` captures all `DEBUG` level structured output (`[timestamp] [level] [command] message`).
+- **Standard error stream:** Sends all `DEBUG` and `INFO` messages directly to stderr so that detailed HTTP request/response metrics, timings, and progress statuses are visible in the CLI console.
+- **Timing:** Command duration is logged for performance tracking on every run.
+
+### Backend Logging
+- **Setup:** Configured in [app/core/logging.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/core/logging.py) and initialized on startup in [app/main.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/main.py).
+- **Target:** Streams detailed debug information to `stdout` so that logs appear in the Uvicorn/server console.
+- **Format:** `[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s`
+- **Coverage:** Logs are implemented across the entire service pipeline:
+  - **Ingestion ([ingestion.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/services/ingestion.py)):** Scraper payload sizes, logo URL detection rules, PyMuPDF SVG parsing, `rembg` invocation, brand color extraction details, and product image downloads.
+  - **Campaign ([campaign.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/services/campaign.py)):** Theme generation prompts/responses, fuzzy product matching results, and Flux Kontext prompts.
+  - **Flux ([flux.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/services/flux.py)):** Job submission, status polling (attempt numbers and statuses), and result downloads.
+  - **Image Processor ([image_processor.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/services/image_processor.py)):** Corner brightness crop metrics, placement calculations, Pillow compositing transformations, and ColorThief palettes.
 
 ```bash
 # 1. Ingest company

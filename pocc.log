@@ -1,0 +1,56 @@
+[2026-07-02 10:18:52] [INFO] [ingest] Ingesting URL: https://spicenfood.com/
+[2026-07-02 10:20:09] [ERROR] [ingest] HTTP 500 on POST /ingest: Internal Server Error
+[2026-07-02 10:20:17] [INFO] [ingest] Ingesting URL: https://spicenfood.com/
+[2026-07-02 10:21:19] [ERROR] [ingest] HTTP 500 on POST /ingest: Internal Server Error
+[2026-07-02 10:34:12] [INFO] [ingest] Ingesting URL: https://spicenfood.com/
+[2026-07-02 10:37:15] [ERROR] [ingest] Request timed out after 180s: POST /ingest
+[2026-07-02 14:50:44] [INFO] [ingest] Ingesting URL: https://spicenfood.com/
+[2026-07-02 14:52:11] [INFO] [ingest] POST /ingest → 200 (86.85s)
+[2026-07-02 14:52:11] [INFO] [ingest] Company saved: SPICEN (slug=spicen)
+[2026-07-02 14:52:11] [INFO] [ingest] Products saved: 8 products
+[2026-07-02 14:52:11] [INFO] [ingest] Logo downloaded successfully (url=http://spicenfood.com/cdn/shop/files/Full_Logo_Spicen_Outline_SVG.svg)
+[2026-07-02 14:52:11] [INFO] [ingest] Command completed in 86.87s
+[2026-07-02 14:53:48] [INFO] [campaign] Generating themes for company=spicen, topic=chirstmas and holiday season
+[2026-07-02 14:54:33] [INFO] [campaign] POST /campaign → 200 (45.69s)
+[2026-07-02 14:54:33] [INFO] [campaign] Themes generated: session_id=3e00c368-1aaa-423f-80b8-0e488f204d74, count=5
+[2026-07-02 14:54:33] [INFO] [campaign] Command completed in 45.76s
+[2026-07-02 14:58:32] [INFO] [select] Selecting theme 5 from session=3e00c368-1aaa-423f-80b8-0e488f204d74
+[2026-07-02 14:58:39] [INFO] [select] POST /select → 200 (7.39s)
+[2026-07-02 14:58:39] [INFO] [select] Theme selected: theme_name=Nostalgic Host Gift Box, product=Apricot, Banana, Vanilla Flavored Mixer 12 Pack
+[2026-07-02 14:58:39] [INFO] [select] Image ideas generated: 3 ideas
+[2026-07-02 14:58:39] [INFO] [select] Command completed in 7.42s
+[2026-07-02 15:00:11] [INFO] [image] Generating image: session=3e00c368-1aaa-423f-80b8-0e488f204d74, idea=2
+[2026-07-02 15:00:11] [INFO] [image] Submitting to Flux API...
+[2026-07-02 15:00:38] [ERROR] [image] HTTP 500 on POST /image?idea_number=2: {"detail":"Flux generation failed: All connection attempts failed"}
+[2026-07-02 15:08:04] [INFO] [image] Generating image: session=3e00c368-1aaa-423f-80b8-0e488f204d74, idea=2
+[2026-07-02 15:08:04] [INFO] [image] Submitting to Flux API...
+[2026-07-02 15:08:19] [ERROR] [image] HTTP 500 on POST /image?idea_number=2: {"detail":"Flux generation failed: Client error '404 Not Found' for url 'https://api.bfl.ai/v1/get_result?id=f65e7d49-42f3-4058-bc8c-df01f3733e97'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404"}
+[2026-07-02 15:41:42] [INFO] [image] Generating image: session=3e00c368-1aaa-423f-80b8-0e488f204d74, idea=2
+[2026-07-02 15:41:42] [INFO] [image] Submitting to Flux API...
+[2026-07-02 15:41:59] [ERROR] [image] HTTP 500 on POST /image?idea_number=2: {"detail":"Flux generation failed: Client error '404 Not Found' for url 'https://api.bfl.ai/v1/get_result?id=3d2c8c56-bdb2-4147-a6fa-c0e68d33c3fb'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404"}
+[2026-07-02 15:44:38] [INFO] [image] Generating image: session=3e00c368-1aaa-423f-80b8-0e488f204d74, idea=2
+[2026-07-02 15:44:38] [INFO] [image] Submitting to Flux API...
+[2026-07-02 15:45:19] [INFO] [image] POST /image?idea_number=2 → 200 (40.96s)
+[2026-07-02 15:45:19] [INFO] [image] Flux completed synchronously: flux_job_id=N/A
+[2026-07-02 15:45:19] [INFO] [image] Logo placement analyzed: corner=bottom_left
+[2026-07-02 15:45:19] [INFO] [image] Image generation complete: http://localhost:8000/jobs/3e00c368-1aaa-423f-80b8-0e488f204d74/image
+[2026-07-02 15:45:19] [INFO] [image] Command completed in 40.98s
+[2026-07-02 15:58:17] [INFO] [select] Selecting theme 3 from session=3e00c368-1aaa-423f-80b8-0e488f204d74
+[2026-07-02 15:58:47] [INFO] [select] POST /select → 200 (29.83s)
+[2026-07-02 15:58:47] [INFO] [select] Theme selected: theme_name=Tropical Sleigh Escape, product=MANGO PASSION FRUIT PARTY FROST
+[2026-07-02 15:58:47] [INFO] [select] Image ideas generated: 3 ideas
+[2026-07-02 15:58:47] [INFO] [select] Command completed in 29.86s
+[2026-07-02 16:00:15] [INFO] [image] Generating image: session=3e00c368-1aaa-423f-80b8-0e488f204d74, idea=1
+[2026-07-02 16:00:15] [INFO] [image] Submitting to Flux API...
+[2026-07-02 16:00:54] [INFO] [image] POST /image?idea_number=1 → 200 (39.56s)
+[2026-07-02 16:00:54] [INFO] [image] Flux completed synchronously: flux_job_id=N/A
+[2026-07-02 16:00:54] [INFO] [image] Logo placement analyzed: corner=top_right
+[2026-07-02 16:00:54] [INFO] [image] Image generation complete: http://localhost:8000/jobs/3e00c368-1aaa-423f-80b8-0e488f204d74/image
+[2026-07-02 16:00:54] [INFO] [image] Command completed in 39.59s
+[2026-07-02 16:10:33] [INFO] [image] Generating image: session=3e00c368-1aaa-423f-80b8-0e488f204d74, idea=2
+[2026-07-02 16:10:33] [INFO] [image] Submitting to Flux API...
+[2026-07-02 16:11:07] [INFO] [image] POST /image?idea_number=2 → 200 (33.52s)
+[2026-07-02 16:11:07] [INFO] [image] Flux completed synchronously: flux_job_id=N/A
+[2026-07-02 16:11:07] [INFO] [image] Logo placement analyzed: corner=top_right
+[2026-07-02 16:11:07] [INFO] [image] Image generation complete: http://localhost:8000/jobs/3e00c368-1aaa-423f-80b8-0e488f204d74/image
+[2026-07-02 16:11:07] [INFO] [image] Command completed in 33.54s
