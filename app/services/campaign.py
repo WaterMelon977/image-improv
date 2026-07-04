@@ -16,9 +16,9 @@ def generate_image_ideas(
     product: dict
 ) -> list[str]:
     """
-    generate 3 minimalist image ideas for the selected theme + product.
+    generate 3 image ideas for the selected theme + product.
     each idea describes background environment and scene only (not product).
-    ideas vary in intensity: 2 equally minimal, 1 very minimal.
+    ideas vary in intensity: theme-rich → simplified → ultra-minimal.
     all ideas incorporate theme ambience and reserve space for logo.
     returns list of 3 one-liner strings.
     """
@@ -26,7 +26,7 @@ def generate_image_ideas(
     brand_voice = ', '.join(company.get('brand_voice', []))
     ambience = theme.get('ambience', '')
     
-    prompt = f"""You are an Instagram product photographer and creative director specializing in minimalist product photography.
+    prompt = f"""You are an Instagram product photographer and creative director specializing in premium product photography for social media.
 
 Company: {company['name']}
 Brand voice: {brand_voice}
@@ -37,40 +37,30 @@ Mood: {theme['mood']}
 Scene ambience: {ambience}
 Product: {product['name']} — {product['description']}
 
-Task: Generate exactly 3 minimalist background scene ideas for this product photo.
+Task: Generate exactly 3 background scene ideas for this product photo, each with a different intensity of theme presence.
 
-Constraints for EXTREME MINIMALISM:
-- Each idea must describe ONLY background/environment/lighting — NEVER the product.
-- The product will occupy the left 60% of the frame. Reserve the right 30% as negative space (will contain company logo).
-- Maximum 1-2 subtle supporting props per idea (if any). Examples: single wrapped gift, small decorative plant, folded fabric, single candle.
-- NO large objects, busy textures, high-contrast elements, or competing visual focal points.
-- Safe elements: subtle color shifts, directional lighting, depth-of-field blur, minimal props, atmospheric effects.
-- Support the campaign theme and ambience WITHOUT overwhelming the scene.
+Composition rule for all 3:
+- Describe ONLY background/environment/lighting/props — NEVER the product itself.
+- Product occupies the left 60% of frame. Reserve right 30% as clean negative space for a logo.
+- No object should overlap or compete with where the product sits.
 
-Intensity variation (important):
-- Ideas 1 & 2: Equally minimal, distinct from each other. Each leans into different aspects of the ambience.
-- Idea 3: VERY minimal. Almost monochromatic or single-element. Most subdued background of the three.
+Intensity variation (this is the core instruction):
 
-Examples of minimalist scene ideas for reference:
-- Theme: Christmas luxury → Idea 1: "Soft warm gold light on white marble surface, single small wrapped gift in background blur."
-- Theme: Christmas luxury → Idea 2: "Cool daylight, subtle white snowflake bokeh on soft grey backdrop, neutral tone."
-- Theme: Christmas luxury → Idea 3: "Pale cream background, no elements, soft directional window light casting gentle shadow."
-- Theme: Summer pool party → Idea 1: "Dappled sunlight on white surface with faint turquoise water reflection, no props."
-- Theme: Summer pool party → Idea 2: "Soft blue bokeh background with single lime slice edge, natural daylight."
-- Theme: Summer pool party → Idea 3: "Pale beige background, single light ray, minimal depth."
+- Idea 1 — THEME-RICH: Bring the campaign theme fully to life. Use 2-4 concrete elements that visually anchor "{theme['theme_name']}" (seasonal props, textures, colors, occasion cues). This should look like a fully styled Instagram hero shot — think real brand campaign photography, not a bare studio backdrop. Still no busy clutter — every element should be deliberate and photograph-worthy.
+- Idea 2 — SIMPLIFIED: Take the same scene direction as Idea 1 but strip it down to 1 supporting element max. Keep the same lighting/mood/color language as Idea 1 so it reads as a quieter version of the same shoot.
+- Idea 3 — ULTRA MINIMAL: Almost no elements. Near-monochromatic surface, single light source, no props. Most subdued of the three.
 
 Each idea must be:
-- ONE sentence, vivid but minimal.
+- ONE sentence, vivid, concrete (nameable textures, light quality, real materials — not abstract adjectives).
 - Grounded in the ambience: "{ambience}"
-- Compositionally aware: product left, logo space right.
-- Thematically relevant to "{theme['theme_name']}" without visual overload.
+- Realistic and photographable — describe things a real photographer could actually set up, not surreal or CGI-style concepts.
 
 Return ONLY valid JSON:
 {{
   "ideas": [
-    "idea one sentence — equally minimal, distinct variation",
-    "idea two sentence — equally minimal, different from idea one",
-    "idea three sentence — VERY minimal, most subdued"
+    "idea one — theme-rich, 2-4 concrete elements",
+    "idea two — simplified version of idea one, 1 element max",
+    "idea three — ultra minimal, near-monochrome, no elements"
   ]
 }}"""
 
@@ -172,50 +162,70 @@ def build_flux_prompt(
     company: dict,
     theme: dict,
     product: dict,
-    idea: str
+    idea: str,
+    user_tweak: str | None = None
 ) -> str:
     """
-    build a surgical Flux Kontext prompt for image-to-image editing.
-    locks product, changes only environment/background/lighting.
+    calls an LLM to compress the scene idea into a short, surgical Flux 2 Pro
+    image-editing prompt (under 70 words, 3-line structure).
+    long descriptive prompts degrade Flux 2 Pro output — this keeps it minimal.
+    if user_tweak is provided, the LLM incorporates it while still respecting constraints.
     """
-    logger.debug("Entering build_flux_prompt(company=%s, theme=%s, product=%s)", 
-                 company.get("name"), theme.get("theme_name"), product.get("name"))
-    brand_voice = ', '.join(company.get('brand_voice', []))
+    logger.debug("Entering build_flux_prompt(company=%s, theme=%s, product=%s, user_tweak=%s)",
+                 company.get("name"), theme.get("theme_name"), product.get("name"), user_tweak)
     primary_color = company.get('primary_color', '')
     secondary_color = company.get('secondary_color', '')
 
-    color_hint = ""
-    if primary_color:
-        color_hint = f"Color palette inspired by {primary_color}"
-        if secondary_color:
-            color_hint += f" and {secondary_color}"
-        color_hint += "."
-        logger.debug("Using color hint: %s", color_hint)
+    tweak_section = ""
+    if user_tweak and user_tweak.strip():
+        tweak_section = f"""
+User override instruction (incorporate this into line 2, while keeping everything else the same):
+"{user_tweak.strip()}"
+"""
 
-    prompt = f"""Edit only the background and environment of this product photograph.
+    meta_prompt = f"""You are a technical prompt engineer for Flux 2 Pro, an image-to-image model used for product photo editing.
+NOT FLUX KONTEXT PRO
+Your ONLY job: write a short, surgical image-editing instruction. Flux performs worse with long or descriptive prompts — it starts inventing extra objects, textures, or lighting artifacts when given too much input. Your prompt must be the shortest possible version that still gets the scene right.
 
-PRESERVE EXACTLY — do not change these under any circumstances:
-- The product packaging, shape, geometry
-- All label text, logo, branding on the product
-- Product colors and material finish
-- Product placement and scale in the frame
+Context (for your understanding only — do NOT restate brand voice, campaign concept, or marketing language in the output):
+Selected scene idea: "{idea}"
+Mood: {theme['mood']}
+Primary color: {primary_color}
+Secondary color: {secondary_color}
+{tweak_section}
+Task: Write a Flux editing prompt using this exact structure, and nothing else:
 
-CHANGE ONLY:
-- Background environment: {idea}
-- Lighting mood: {theme['mood']}
-- Atmospheric elements that support the scene
+1. One line: what stays untouched (product, label, logo, geometry, scale — always the same wording, don't vary this).
+2. One line: what changes (background/environment only) — compress the scene idea into its visual essentials. Drop any word that isn't a physical, photographable detail (no "energetic," "premium," "festive" — describe light, surface, and the 1-2 real objects only).
+3. One line: photographic realism directive — real phone/DSLR product photography, natural light behavior, authentic imperfections (soft shadow falloff, slight grain, true-to-life color), NOT airbrushed or synthetic-looking.
 
-STYLE:
-- Brand voice: {brand_voice}
-- Campaign angle: {theme['campaign_angle']}
-- {color_hint}
-- Premium, minimalist, high-end Instagram product photography
-- The product is the hero. Everything else serves the product.
-- No text overlays. No watermarks. No logos added."""
+Hard constraints:
+- Total output under 70 words.
+- No brand adjectives, no marketing language, no campaign names.
+- No more than 2 physical props mentioned total.
+- Every phrase must describe something a camera could literally capture.
 
-    res = prompt.strip()
-    logger.debug("Generated Flux prompt (length=%d chars)", len(res))
-    return res
+Return ONLY valid JSON:
+{{
+  "flux_prompt": "the complete compressed prompt as one string, following the 3-line structure above"
+}}"""
+
+    import time
+    t0 = time.monotonic()
+    logger.debug("Calling OpenAI API (model=gpt-4.1-mini) for Flux prompt compression...")
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        max_tokens=300,
+        temperature=0.3,
+        messages=[{"role": "user", "content": meta_prompt}]
+    )
+    elapsed = time.monotonic() - t0
+    text = _extract_text(response)
+    logger.debug("OpenAI response received in %.2fs. Content: %s", elapsed, text)
+    data = _parse_json(text)
+    flux_prompt = data["flux_prompt"]
+    logger.debug("Generated Flux prompt (length=%d chars): %s", len(flux_prompt), flux_prompt)
+    return flux_prompt
 
 
 def select_best_product(products: list[dict], theme: dict) -> dict | None:

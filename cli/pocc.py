@@ -221,10 +221,12 @@ def ingest(url: str):
         logger.info(
             f"Already ingested: company_name={result['company_name']} slug={result['company_slug']}"
         )
+        slug = result['company_slug']
         console.print(Panel(
             f"[yellow]Already ingested.[/yellow]\n\n"
             f"Company: [bold]{result['company_name']}[/bold]\n"
-            f"Reference slug: [cyan]{result['company_slug']}[/cyan]",
+            f"Reference slug: [cyan]{slug}[/cyan]\n\n"
+            f"Next: [dim]pocc campaign --company {slug} --topic \"your topic\"[/dim]",
             title="Existing Company",
             box=box.ROUNDED
         ))
@@ -380,6 +382,7 @@ def select(session_id: str, theme_number: int):
     console.print(f"\n[dim]Session ID:[/dim] [cyan]{session_id}[/cyan]")
     console.print(
         f"\nNext: [dim]pocc image --session {session_id} --idea <number>[/dim]\n"
+        f"[dim]The image command will preview and let you edit the Flux prompt before generating.[/dim]\n"
     )
 
     elapsed = round(time.monotonic() - t0, 2)
@@ -394,37 +397,97 @@ def select(session_id: str, theme_number: int):
 @click.option("--session", "session_id", required=True, help="Session ID")
 @click.option("--idea", "idea_number", required=True, type=int, help="Idea number 1-3")
 def image(session_id: str, idea_number: int):
-    """Generate final product image using Flux + logo placement"""
+    """Preview the Flux prompt, optionally edit it, then generate the final image"""
     logger = get_logger("image")
     t0 = time.monotonic()
 
     logger.info(f"Generating image: session={session_id}, idea={idea_number}")
-    console.print(f"\n[bold]Generating image[/bold] — idea {idea_number}\n")
 
-    logger.info("Submitting to Flux API...")
-    with console.status("[cyan]Submitting to Flux...[/cyan]"):
-        result = post(
-            f"/image?idea_number={idea_number}",
-            {"session_id": session_id},
+    # ── Step 1: Preview the compressed Flux prompt ───────────────────────────
+    console.print(f"\n[bold]Step 1/2 — Building Flux prompt[/bold] for idea [cyan]{idea_number}[/cyan]…\n")
+
+    user_tweak = None
+    with console.status("[cyan]Compressing scene into a Flux prompt…[/cyan]"):
+        preview = post(
+            "/preview-prompt",
+            {"session_id": session_id, "idea_number": idea_number, "user_tweak": user_tweak},
             logger=logger
         )
 
-    # Synchronous fast path
-    if result.get("status") == "done":
-        logger.info(
-            f"Flux completed synchronously: flux_job_id={result.get('flux_job_id', 'N/A')}"
+    flux_prompt = preview["flux_prompt"]
+    selected_idea = preview.get("selected_idea", "")
+
+    def _show_prompt_panel(prompt: str, tweak: str | None = None):
+        tweak_note = f"\n[dim]Applied tweak:[/dim] [yellow]{tweak}[/yellow]" if tweak else ""
+        console.print(Panel(
+            f"[dim]Scene:[/dim] {selected_idea}\n\n"
+            f"[bold white]{prompt}[/bold white]"
+            + tweak_note,
+            title="[bold cyan]Flux Prompt Preview[/bold cyan]",
+            subtitle=f"[dim]{len(prompt.split())} words[/dim]",
+            border_style="cyan",
+            padding=(1, 2)
+        ))
+
+    _show_prompt_panel(flux_prompt)
+
+    # ── Step 2: Optional edit loop ───────────────────────────────────────────
+    while True:
+        edit = click.prompt(
+            "\nEdit this prompt?",
+            default="n",
+            show_default=True,
+            prompt_suffix=" (y/N) "
+        ).strip().lower()
+
+        if edit != "y":
+            break
+
+        user_tweak = click.prompt(
+            "  Describe your tweak",
+            prompt_suffix="\n  e.g. \"Make it golden hour lighting, warmer tones\"\n  › "
+        ).strip()
+
+        if not user_tweak:
+            console.print("[yellow]No tweak entered. Keeping current prompt.[/yellow]")
+            break
+
+        logger.info(f"User requested tweak: '{user_tweak}'")
+        console.print(f"\n[dim]Regenerating prompt with your tweak…[/dim]")
+
+        with console.status("[cyan]Rebuilding Flux prompt…[/cyan]"):
+            preview = post(
+                "/preview-prompt",
+                {"session_id": session_id, "idea_number": idea_number, "user_tweak": user_tweak},
+                logger=logger
+            )
+
+        flux_prompt = preview["flux_prompt"]
+        _show_prompt_panel(flux_prompt, tweak=user_tweak)
+
+    # ── Step 3: Generate the image ───────────────────────────────────────────
+    console.print(f"\n[bold]Step 2/2 — Generating image[/bold] with Flux 2 Pro…\n")
+    logger.info("Submitting confirmed prompt to Flux API...")
+
+    with console.status("[cyan]Submitting to Flux…[/cyan]"):
+        result = post(
+            "/generate-from-prompt",
+            {"session_id": session_id, "flux_prompt": flux_prompt},
+            logger=logger
         )
+
+    if result.get("status") == "done":
+        logger.info(f"Flux completed: flux_prompt_used={flux_prompt[:60]}...")
         _log_and_print_image_result(result, session_id, logger)
         elapsed = round(time.monotonic() - t0, 2)
         logger.info(f"Command completed in {elapsed}s")
         return
 
-    # Poll
-    console.print("[dim]Flux is processing...[/dim]")
+    # Poll if not synchronously done
+    console.print("[dim]Flux is processing…[/dim]")
     final_status = poll_status(session_id, logger=logger)
 
     if final_status in ("done", "done_no_logo"):
-        status_data = get(f"/jobs/{session_id}/status", logger=logger)
         logger.info(f"Flux completed: status={final_status}")
         _log_and_print_image_result(result, session_id, logger)
 

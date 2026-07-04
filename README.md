@@ -1,6 +1,6 @@
 # POCC — Product Creative Platform
 
-Telegram-driven AI product image generation. FastAPI + Flux Kontext + Claude Sonnet.
+Telegram-driven AI product image generation. FastAPI + Flux 2 Pro + Claude Sonnet.
 
 ---
 
@@ -92,12 +92,13 @@ http://localhost:8000/docs
 CLI (Click + Rich)
   ↓ HTTP
 FastAPI
-  ├── POST /ingest       → Firecrawl → AI extract → PostgreSQL
-  ├── POST /campaign     → Claude Sonnet → 5 themes
-  ├── POST /select       → pick theme → 3 image ideas
-  ├── POST /image        → Flux Kontext (img2img) → logo placement → final PNG
+  ├── POST /ingest                  → Firecrawl → AI extract → PostgreSQL
+  ├── POST /campaign                → Claude Sonnet → 5 themes
+  ├── POST /select                  → pick theme → 3 image ideas
+  ├── POST /preview-prompt          → LLM-based Flux prompt builder (review & edit)
+  ├── POST /generate-from-prompt    → Flux 2 Pro (img2img) → logo placement → final PNG
   ├── GET  /jobs/{id}/status
-  └── GET  /jobs/{id}/image   → serves final PNG
+  └── GET  /jobs/{id}/image         → serves final PNG
 ```
 
 ---

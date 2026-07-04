@@ -1,6 +1,7 @@
 import uuid
 import asyncio
 import logging
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -45,6 +46,15 @@ class SelectIdeaRequest(BaseModel):
 class GenerateImageRequest(BaseModel):
     session_id: str
 
+class FluxPreviewRequest(BaseModel):
+    session_id: str
+    idea_number: int          # 1-3 — which idea to compress into a Flux prompt
+    user_tweak: str | None = None  # optional inline edit instruction e.g. "make it golden hour"
+
+class FluxGenerateRequest(BaseModel):
+    session_id: str
+    flux_prompt: str   # the confirmed (or user-edited) prompt to send to Flux
+
 
 # -- helper --
 
@@ -61,6 +71,31 @@ def _get_session_or_404(session_id: str, db: Session) -> CampaignSession:
     return session
 
 
+def normalize_url(url: str) -> str:
+    """
+    Standardize incoming URLs to prevent duplication:
+    - Strips spaces and converts to lowercase
+    - Force scheme to 'https://' (scheme-agnostic duplication check)
+    - Strips 'www.' subdomain
+    - Strips trailing slashes
+    """
+    url_str = url.strip().lower()
+    
+    # Remove any existing scheme so we can force a uniform 'https://'
+    if url_str.startswith("http://"):
+        url_str = url_str[7:]
+    elif url_str.startswith("https://"):
+        url_str = url_str[8:]
+        
+    parsed = urlparse("https://" + url_str)  # Force https
+    netloc = parsed.netloc
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+        
+    path = parsed.path.rstrip("/")
+    return f"https://{netloc}{path}"
+
+
 # ============================================================
 # POST /ingest
 # ingests a company url — full pipeline
@@ -68,9 +103,18 @@ def _get_session_or_404(session_id: str, db: Session) -> CampaignSession:
 
 @router.post("/ingest")
 async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
-    logger.info("POST /ingest called with URL: %s", req.url)
-    # check if already ingested
-    existing = db.query(Company).filter(Company.website_url == req.url).first()
+    # Normalize URL immediately
+    normalized_url = normalize_url(req.url)
+    logger.info("POST /ingest called. Original URL: %s, Normalized: %s", req.url, normalized_url)
+    
+    # Get all ingested companies and compare normalized URLs to catch legacy records
+    companies = db.query(Company).all()
+    existing = None
+    for c in companies:
+        if normalize_url(c.website_url) == normalized_url:
+            existing = c
+            break
+
     if existing:
         logger.info("Company already ingested: %s (slug=%s)", existing.name, existing.slug)
         return {
@@ -80,13 +124,13 @@ async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
             "message": f"Company already loaded. Reference as: {existing.slug}"
         }
 
-    # run full ingestion pipeline
+    # run full ingestion pipeline with normalized URL
     try:
-        data = await ingest_company(req.url)
+        data = await ingest_company(normalized_url)
         intel = data["intelligence"]
         colors = data["colors"]
     except Exception as e:
-        logger.error("Ingestion failed for URL %s: %s", req.url, str(e), exc_info=True)
+        logger.error("Ingestion failed for URL %s: %s", normalized_url, str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
     logger.debug("Ingestion successful. Saving company to database: %s", intel["company_name"])
@@ -95,7 +139,7 @@ async def ingest(req: IngestRequest, db: Session = Depends(get_db)):
         id=str(uuid.uuid4()),
         name=intel["company_name"],
         slug=data["slug"],
-        website_url=req.url,
+        website_url=normalized_url,
         industry=intel.get("industry"),
         description=intel.get("description"),
         brand_voice=intel.get("brand_voice", []),
@@ -442,4 +486,146 @@ def list_companies(db: Session = Depends(get_db)):
         }
         for c in companies
     ]
+
+
+# ============================================================
+# POST /preview-prompt
+# generate + return the compressed Flux prompt for user review.
+# DOES NOT call Flux — cheap LLM-only operation.
+# ============================================================
+
+@router.post("/preview-prompt")
+def preview_flux_prompt(req: FluxPreviewRequest, db: Session = Depends(get_db)):
+    logger.info("POST /preview-prompt called for session_id: %s, idea_number: %d", req.session_id, req.idea_number)
+    session = _get_session_or_404(req.session_id, db)
+    company = db.query(Company).filter(Company.id == session.company_id).first()
+    product = db.query(Product).filter(Product.id == session.selected_product_id).first()
+
+    if not product:
+        raise HTTPException(status_code=400, detail="No product selected. Run /select first.")
+
+    ideas = session.image_ideas or []
+    if req.idea_number < 1 or req.idea_number > len(ideas):
+        raise HTTPException(status_code=400, detail=f"Invalid idea number. Choose 1-{len(ideas)}.")
+
+    chosen_idea = ideas[req.idea_number - 1]
+
+    company_dict = {
+        "name": company.name,
+        "brand_voice": company.brand_voice or [],
+        "primary_color": company.primary_color,
+        "secondary_color": company.secondary_color,
+    }
+
+    logger.debug("Building compressed Flux prompt via LLM for idea: '%s', tweak: '%s'", chosen_idea, req.user_tweak)
+    flux_prompt = build_flux_prompt(
+        company=company_dict,
+        theme=session.selected_theme,
+        product={"name": product.name, "description": product.description},
+        idea=chosen_idea,
+        user_tweak=req.user_tweak
+    )
+
+    # persist the prompt and idea index so /generate-from-prompt can read them
+    session.selected_idea_index = req.idea_number - 1
+    session.flux_prompt = flux_prompt
+    db.commit()
+    logger.info("Flux prompt preview generated and saved to session %s", session.id)
+
+    return {
+        "session_id": session.id,
+        "idea_number": req.idea_number,
+        "selected_idea": chosen_idea,
+        "flux_prompt": flux_prompt,
+        "ready_to_generate": True,
+        "next": "POST /generate-from-prompt with session_id and flux_prompt (edit the prompt if needed)"
+    }
+
+
+# ============================================================
+# POST /generate-from-prompt
+# user confirmed (or edited) the Flux prompt — now call Flux.
+# accepts the prompt string directly so user can tweak before submission.
+# ============================================================
+
+@router.post("/generate-from-prompt")
+async def generate_from_prompt(req: FluxGenerateRequest, db: Session = Depends(get_db)):
+    logger.info("POST /generate-from-prompt called for session_id: %s", req.session_id)
+    session = _get_session_or_404(req.session_id, db)
+    company = db.query(Company).filter(Company.id == session.company_id).first()
+    product = db.query(Product).filter(Product.id == session.selected_product_id).first()
+
+    if not product:
+        raise HTTPException(status_code=400, detail="No product selected. Run /select first.")
+
+    if not product.master_image_path or not Path(product.master_image_path).exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"No master image found for product '{product.name}'. Re-run ingestion."
+        )
+
+    flux_prompt = req.flux_prompt.strip()
+    if not flux_prompt:
+        raise HTTPException(status_code=400, detail="flux_prompt cannot be empty.")
+
+    logger.info("Using Flux prompt (length=%d): %s", len(flux_prompt), flux_prompt)
+
+    # persist final prompt in use (may differ from preview if user edited it)
+    session.flux_prompt = flux_prompt
+    session.status = "flux_running"
+    db.commit()
+
+    # call Flux
+    try:
+        raw_path, flux_job_id = await generate_with_flux(
+            master_image_path=product.master_image_path,
+            prompt=flux_prompt,
+            session_id=session.id
+        )
+    except Exception as e:
+        logger.error("Flux generation failed for session %s: %s", session.id, str(e), exc_info=True)
+        session.status = "failed"
+        session.error_message = str(e)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Flux generation failed: {e}")
+
+    session.raw_image_path = raw_path
+    session.flux_job_id = flux_job_id
+    session.status = "flux_done"
+    db.commit()
+    logger.info("Flux job %s completed. Raw image: %s", flux_job_id, raw_path)
+
+    # analyze for logo placement
+    placement = analyze_image_for_logo_placement(raw_path)
+    dominant_colors = extract_dominant_colors(raw_path)
+
+    # composite logo if available
+    final_path = raw_path
+    if company.logo_local_path and Path(company.logo_local_path).exists():
+        logger.info("Compositing logo onto image...")
+        final_path = composite_logo(
+            base_image_path=raw_path,
+            logo_path=company.logo_local_path,
+            placement=placement,
+            session_id=session.id
+        )
+
+    session.final_image_path = final_path
+    session.logo_placement = placement
+    session.status = "done"
+    db.commit()
+    logger.info("Image processing complete for session %s. Status: done", session.id)
+
+    return {
+        "session_id": session.id,
+        "status": "done",
+        "flux_prompt_used": flux_prompt,
+        "logo_placement": {
+            "corner": placement["best_corner"],
+            "brightness_map": placement["brightness_map"]
+        },
+        "dominant_colors": dominant_colors,
+        "image_url": f"http://localhost:8000/api/v1/jobs/{session.id}/image",
+        "raw_url":   f"http://localhost:8000/api/v1/jobs/{session.id}/raw"
+    }
 

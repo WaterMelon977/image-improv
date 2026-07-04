@@ -54,3 +54,60 @@
 [2026-07-02 16:11:07] [INFO] [image] Logo placement analyzed: corner=top_right
 [2026-07-02 16:11:07] [INFO] [image] Image generation complete: http://localhost:8000/jobs/3e00c368-1aaa-423f-80b8-0e488f204d74/image
 [2026-07-02 16:11:07] [INFO] [image] Command completed in 33.54s
+[2026-07-04 21:06:51] [INFO] [select] Selecting theme 3 from session=3e00c368-1aaa-423f-80b8-0e488f204d74
+[2026-07-04 21:06:55] [ERROR] [select] Cannot connect to server. Is it running? `uvicorn app.main:app --reload`
+[2026-07-04 21:08:22] [INFO] [ingest] Ingesting URL: https://spicenfood.com
+[2026-07-04 21:09:27] [ERROR] [ingest] HTTP 500 on POST /ingest: {"detail":"Ingestion failed: "}
+[2026-07-04 21:10:11] [INFO] [select] Selecting theme 3 from session=3e00c368-1aaa-423f-80b8-0e488f204d74
+[2026-07-04 21:10:26] [INFO] [select] POST /select → 200 (15.61s)
+[2026-07-04 21:10:26] [INFO] [select] Theme selected: theme_name=Tropical Sleigh Escape, product=MANGO PASSION FRUIT PARTY FROST
+[2026-07-04 21:10:26] [INFO] [select] Image ideas generated: 3 ideas
+[2026-07-04 21:10:26] [INFO] [select] Command completed in 15.65s
+[2026-07-04 21:11:21] [INFO] [image] Generating image: session=3e00c368-1aaa-423f-80b8-0e488f204d74, idea=1
+[2026-07-04 21:11:21] [INFO] [image] Submitting to Flux API...
+[2026-07-04 21:11:49] [INFO] [image] POST /image?idea_number=1 → 200 (28.21s)
+[2026-07-04 21:11:49] [INFO] [image] Flux completed synchronously: flux_job_id=N/A
+[2026-07-04 21:11:49] [INFO] [image] Logo placement analyzed: corner=top_left
+[2026-07-04 21:11:49] [INFO] [image] Image generation complete: http://localhost:8000/jobs/3e00c368-1aaa-423f-80b8-0e488f204d74/image
+[2026-07-04 21:11:49] [INFO] [image] Command completed in 28.23s
+[2026-07-04 21:31:07] [INFO] [ingest] Ingesting URL: https://spicenfood.com
+[2026-07-04 21:33:07] [INFO] [ingest] Ingesting URL: https://spicenfood.com
+[2026-07-04 21:34:28] [ERROR] [ingest] HTTP 500 on POST /ingest: Internal Server Error
+[2026-07-04 21:43:39] [INFO] [campaign] Generating themes for company=SPICEN, topic=summer beach campaign
+[2026-07-04 21:43:42] [ERROR] [campaign] HTTP 404 on POST /campaign: {"detail":"Company 'SPICEN' not found. Run --url first."}
+[2026-07-04 21:43:57] [INFO] [campaign] Generating themes for company=spicen, topic=summer beach campaign
+[2026-07-04 21:44:36] [INFO] [campaign] POST /campaign → 200 (38.33s)
+[2026-07-04 21:44:36] [INFO] [campaign] Themes generated: session_id=13276e8d-2ec9-4d63-a487-552942f79e69, count=5
+[2026-07-04 21:44:36] [INFO] [campaign] Command completed in 38.38s
+[2026-07-04 21:46:22] [INFO] [select] Selecting theme 1 from session=13276e8d-2ec9-4d63-a487-552942f79e69
+[2026-07-04 21:46:35] [INFO] [select] POST /select → 200 (12.84s)
+[2026-07-04 21:46:35] [INFO] [select] Theme selected: theme_name=Shoreline Day Party, product=MANGO PASSION FRUIT PARTY FROST
+[2026-07-04 21:46:35] [INFO] [select] Image ideas generated: 3 ideas
+[2026-07-04 21:46:35] [INFO] [select] Command completed in 12.87s
+[2026-07-04 21:47:46] [INFO] [image] Generating image: session=13276e8d-2ec9-4d63-a487-552942f79e69, idea=1
+[2026-07-04 21:47:52] [INFO] [image] POST /preview-prompt → 200 (6.26s)
+[2026-07-04 21:48:36] [INFO] [image] Submitting confirmed prompt to Flux API...
+[2026-07-04 21:49:04] [INFO] [image] POST /generate-from-prompt → 200 (28.66s)
+[2026-07-04 21:49:04] [INFO] [image] Flux completed: flux_prompt_used=product, label, logo, geometry, scale unchanged
+warm golden-...
+[2026-07-04 21:49:04] [INFO] [image] Logo placement analyzed: corner=top_right
+[2026-07-04 21:49:04] [INFO] [image] Image generation complete: http://localhost:8000/api/v1/jobs/13276e8d-2ec9-4d63-a487-552942f79e69/image
+[2026-07-04 21:49:04] [INFO] [image] Command completed in 78.57s
+[2026-07-04 21:49:55] [INFO] [image] Generating image: session=13276e8d-2ec9-4d63-a487-552942f79e69, idea=1
+[2026-07-04 21:50:02] [INFO] [image] POST /preview-prompt → 200 (6.39s)
+[2026-07-04 21:51:55] [INFO] [image] User requested tweak: 'i want half beach and half ocean in the image , beach side resting arm chair and cocktail to side'
+[2026-07-04 21:52:02] [INFO] [image] POST /preview-prompt → 200 (6.69s)
+[2026-07-04 21:52:27] [INFO] [image] User requested tweak: 'n'
+[2026-07-04 21:52:34] [INFO] [image] POST /preview-prompt → 200 (6.84s)
+[2026-07-04 21:52:56] [INFO] [image] User requested tweak: 'i want half beach and half ocean in the image , beach side resting arm chair    ││  and cocktail to side'
+[2026-07-04 21:53:06] [INFO] [image] POST /preview-prompt → 200 (10.2s)
+[2026-07-04 21:53:11] [INFO] [image] Submitting confirmed prompt to Flux API...
+[2026-07-04 21:53:38] [INFO] [image] POST /generate-from-prompt → 200 (27.01s)
+[2026-07-04 21:53:38] [INFO] [image] Flux completed: flux_prompt_used=product, label, logo, geometry, scale unchanged
+half sandy b...
+[2026-07-04 21:53:38] [INFO] [image] Logo placement analyzed: corner=top_left
+[2026-07-04 21:53:38] [INFO] [image] Image generation complete: http://localhost:8000/api/v1/jobs/13276e8d-2ec9-4d63-a487-552942f79e69/image
+[2026-07-04 21:53:38] [INFO] [image] Command completed in 222.48s
+[2026-07-04 23:06:30] [INFO] [ingest] Ingesting URL: https://spicenfood.com
+[2026-07-04 23:06:33] [INFO] [ingest] POST /ingest → 200 (3.3s)
+[2026-07-04 23:06:33] [INFO] [ingest] Already ingested: company_name=SPICEN slug=spicen

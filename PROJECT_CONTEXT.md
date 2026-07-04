@@ -3,7 +3,7 @@
 
 **Last updated:** 2025-07-04  
 **Status:** PoC (Proof of Concept) — Synchronous FastAPI, no queue yet  
-**Tech stack:** Python 3.12 + FastAPI + PostgreSQL + Flux Kontext Pro + Claude Sonnet 4.6
+**Tech stack:** Python 3.12 + FastAPI + PostgreSQL + Flux 2 Pro + Claude Sonnet 4.6
 
 ---
 
@@ -17,10 +17,11 @@ POCC is an end-to-end AI product image generation platform. Given a company webs
 4. **Stores** everything in PostgreSQL + local filesystem
 5. **Generates** 5 campaign themes for any user-given topic
 6. **Generates** 3 image ideas per theme
-7. **Calls Flux Kontext Pro** to edit the product image (img2img, preserving product)
-8. **Analyzes** the generated image for optimal logo placement
-9. **Composites** the logo using Pillow (no AI)
-10. **Serves** the final PNG via FastAPI
+7. **Builds and previews** a compressed, surgical editing prompt (LLM-based)
+8. **Calls Flux 2 Pro** to edit the product image (img2img, preserving product) using the confirmed prompt
+9. **Analyzes** the generated image for optimal logo placement
+10. **Composites** the logo using Pillow (no AI)
+11. **Serves** the final PNG via FastAPI
 
 **User entry points:**
 - CLI: `python cli/pocc.py <command>`
@@ -210,23 +211,46 @@ Select a theme → auto-pick best product → generate 3 image ideas.
 }
 ```
 
-### POST /image
-Generate final image using Flux + logo placement.
+### POST /preview-prompt
+Generate and return the LLM-compressed Flux prompt for user review. (Does NOT call Flux API yet, cheap operation).
 
 **Request:**
 ```json
-{ "session_id": "uuid", "idea_number": 3 }
+{
+  "session_id": "uuid",
+  "idea_number": 3
+}
 ```
 
-**Query params:** `?idea_number=3`
+**Response:**
+```json
+{
+  "session_id": "uuid",
+  "idea_number": 3,
+  "selected_idea": "Tropical garden poolside lounge",
+  "flux_prompt": "PRESERVE EXACTLY: Product packaging, label text, and scale.\nCHANGE ONLY: Sunset beachside with turquoise water reflections.\nREALISM: DSLR product photography, soft focus, natural highlights.",
+  "ready_to_generate": true,
+  "next": "POST /generate-from-prompt with session_id and flux_prompt"
+}
+```
+
+### POST /generate-from-prompt
+User confirmed or edited the Flux prompt. Call Flux 2 Pro and run the downstream processing (logo placement + composition).
+
+**Request:**
+```json
+{
+  "session_id": "uuid",
+  "flux_prompt": "PRESERVE EXACTLY: Product packaging, label text, and scale.\nCHANGE ONLY: Sunset beachside with turquoise water reflections.\nREALISM: DSLR product photography, soft focus, natural highlights."
+}
+```
 
 **Response:**
 ```json
 {
   "session_id": "uuid",
   "status": "done",
-  "selected_idea": "Tropical garden poolside lounge",
-  "flux_prompt_used": "[PRESERVE] Product... [CHANGE] Background...",
+  "flux_prompt_used": "...",
   "logo_placement": {
     "corner": "bottom_right",
     "brightness_map": {
@@ -241,6 +265,15 @@ Generate final image using Flux + logo placement.
   "raw_url": "http://localhost:8000/api/v1/jobs/{session_id}/raw"
 }
 ```
+
+### POST /image
+*(Deprecated / Legacy CLI support)* Generate final image using Flux + logo placement in a single synchronous call.
+
+**Request:**
+```json
+{ "session_id": "uuid" }
+```
+**Query params:** `?idea_number=3`
 
 ### GET /jobs/{session_id}/status
 Poll job status.
@@ -291,12 +324,12 @@ List all ingested companies.
 
 1. `generate_themes(company_dict, topic)` — Claude Sonnet with thinking, returns 5 themes with auto-selected best product per theme
 2. `generate_image_ideas(company, theme, product)` — 3 scene descriptions (only environment, not product)
-3. `build_flux_prompt(company, theme, product, idea)` — surgical Flux prompt with [PRESERVE] / [CHANGE] sections
+3. `build_flux_prompt(company, theme, product, idea)` — calls LLM to build a compressed, surgical 3-line Flux prompt (under 70 words)
 4. `select_best_product(products, theme)` — finds product by name match, fuzzy fallback
 
 ### flux.py
 
-**Flux Kontext API integration:**
+**Flux 2 Pro API integration:**
 
 1. `generate_with_flux(master_image_path, prompt, session_id)` — async function:
    - Scales the master image down to a maximum of 1MP (1,000,000 pixels) if it exceeds 1MP, then loads it as base64
@@ -399,7 +432,7 @@ python cli/pocc.py list
 
 **Why not cache:** S3 would be overkill for PoC. Local `master_image_path` is instant.
 
-### 5. Flux Kontext Pro (img2img) not txt2img
+### 5. Flux 2 Pro (img2img) not txt2img
 
 **Why:** Product consistency. txt2img regenerates the product. img2img edits only the background.
 
