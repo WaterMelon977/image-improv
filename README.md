@@ -1,88 +1,132 @@
 # POCC — Product Creative Platform
 
-Telegram-driven AI product image generation. FastAPI + Flux 2 Pro + Claude Sonnet.
+AI product image generation for Instagram-style creatives.  
+**FastAPI + Flux 2 Pro + OpenAI + Pillow** (logo + on-image title overlays).
 
 ---
 
 ## Setup
 
+```powershell
 # 1. venv + deps
 python -m venv venv
-source venv/bin/activate
+.\venv\Scripts\Activate.ps1   # Windows
+# source venv/bin/activate    # macOS/Linux
 pip install -r requirements.txt
 
-# 2. copy .env with your Supabase DATABASE_URL
-cp .env.example .env
-# fill in: DATABASE_URL=postgresql://user:password@db.supabase.co:5432/postgres
+# 2. env
+copy .env.example .env
+# fill: DATABASE_URL, FIRECRAWL_API_KEY, OPENAI_API_KEY, FLUX_API_KEY
 
-# 3. start server
+# 3. start API (Terminal A)
 uvicorn app.main:app --reload --port 8000
 
-# 4. run CLI
-python cli/pocc.py ingest --url https://example.com
+# 4. CLI (Terminal B)
 python cli/pocc.py --help
+```
 
-# or install as command
-pip install -e .
-pocc --help
+On startup the API creates tables and migrates `campaign_sessions.title_overlay` if missing.
 
+API docs: http://localhost:8000/docs
 
 ---
 
 ## Usage
 
 ### Step 1 — Ingest a company
+
 ```bash
 python cli/pocc.py ingest --url https://spicenfood.com
 ```
-Output:
-```
-Company saved.
-Name:     Spicen Foods
-Industry: Food & Beverage
-Products: 5 found
-Reference this company as: spicen_foods
-```
 
-### Step 2 — Generate campaign themes
+Saves company, products, logo, brand voice/colors. Note the **slug** (e.g. `spicen_foods`).
+
+### Step 2 — Campaign themes
+
 ```bash
 python cli/pocc.py campaign --company spicen_foods --topic "summer pool party"
 ```
-Output: table of 5 themes + session ID
 
-### Step 3 — Select a theme
+Returns 5 themes + **session_id**.
+
+### Step 3 — Select a theme → image ideas
+
 ```bash
 python cli/pocc.py select --session <session_id> --theme 2
 ```
-Output: selected theme details + 3 image ideas
 
-### Step 4 — Generate the image
+Auto-picks best product and generates 3 scene ideas (with top headroom for titles).
+
+### Step 4 — Generate image (prompt + title + Flux)
+
 ```bash
-python cli/pocc.py image --session <session_id> --idea 3
-```
-Output: progress bar → final image URL
-
-### View the image
-```
-http://localhost:8000/api/v1/jobs/<session_id>/image
+python cli/pocc.py image --session <session_id> --idea 1
 ```
 
-### List all companies
+Interactive **3-step** flow:
+
+1. **Flux prompt** — preview; optional tweak (`y`/`n`)
+2. **On-image title** — headline / subhead / type mood; optional edit
+3. **Generate** — Flux 2 Pro → logo composite → title overlay → final PNG
+
+### View images
+
+```
+Final (logo + title):  http://localhost:8000/api/v1/jobs/<session_id>/image
+Raw (Flux only):       http://localhost:8000/api/v1/jobs/<session_id>/raw
+```
+
+### Step 5 — Iterate title only (no Flux)
+
+Reuse the existing raw photo; re-place logo + title:
+
+```bash
+python cli/pocc.py retitle --session <session_id> --headline "Poolside Happy Hour" --mood festive_bold
+python cli/pocc.py retitle --session <session_id> --subhead "Mango Margarita Frost" --mood luxury_editorial
+python cli/pocc.py retitle --session <session_id> --regenerate
+```
+
+### Other commands
+
 ```bash
 python cli/pocc.py list
-```
-
-### Check job status
-```bash
 python cli/pocc.py status --session <session_id>
 ```
 
 ---
 
-## API docs
+## On-image titles
+
+Titles are **not** drawn by Flux (unreliable text). Pipeline:
+
 ```
-http://localhost:8000/docs
+LLM copy (headline + subhead + type_mood)
+  → Flux scene (product preserved)
+  → Pillow logo (corner brightness)
+  → Pillow title in fixed top band
 ```
+
+**Safety layout**
+
+| Region | Role |
+|--------|------|
+| Top ~15% | Title band only |
+| Left ~5–55%, y ~18–92% | Product forbid zone |
+| Logo corner box | Title must not overlap |
+
+Candidates: `top_left` / `top_center` / `top_right`, scored by clutter + brightness. Soft scrim + auto light/dark text + brand-color underline.
+
+**Type moods → fonts** (`data/fonts/`)
+
+| Mood | Font | Style |
+|------|------|--------|
+| `minimal_clean` | Open Sans Bold | Title case |
+| `festive_bold` | Montserrat Bold | UPPERCASE |
+| `luxury_editorial` | Playfair Display | Title case |
+| `playful_soft` | Open Sans Bold | Title case |
+| `bold_street` | Montserrat Bold | UPPERCASE |
+
+Composition prompts also reserve upper headroom so Flux scenes leave room for type.
 
 ---
 
@@ -91,14 +135,19 @@ http://localhost:8000/docs
 ```
 CLI (Click + Rich)
   ↓ HTTP
-FastAPI
-  ├── POST /ingest                  → Firecrawl → AI extract → PostgreSQL
-  ├── POST /campaign                → Claude Sonnet → 5 themes
-  ├── POST /select                  → pick theme → 3 image ideas
-  ├── POST /preview-prompt          → LLM-based Flux prompt builder (review & edit)
-  ├── POST /generate-from-prompt    → Flux 2 Pro (img2img) → logo placement → final PNG
+FastAPI  /api/v1
+  ├── POST /ingest               → Firecrawl → AI extract → PostgreSQL + files
+  ├── POST /campaign             → 5 themes
+  ├── POST /select               → theme → product → 3 image ideas
+  ├── POST /preview-prompt       → compressed Flux prompt (edit)
+  ├── POST /preview-title        → title pack (edit); stored on session
+  ├── POST /generate-from-prompt  → Flux → logo → title → final PNG
+  ├── POST /apply-title          → re-composite logo + title (no Flux)
+  ├── POST /image                → legacy one-shot generate
   ├── GET  /jobs/{id}/status
-  └── GET  /jobs/{id}/image         → serves final PNG
+  ├── GET  /jobs/{id}/image
+  ├── GET  /jobs/{id}/raw
+  └── GET  /companies
 ```
 
 ---
@@ -106,23 +155,24 @@ FastAPI
 ## File layout
 
 ```
-pocc/
+image-improv/
   app/
-    api/routes.py        — all fastapi endpoints
-    core/config.py       — settings from .env
-    models/db.py         — sqlalchemy models + table creation
+    api/routes.py          — FastAPI endpoints + postprocess (logo + title)
+    core/config.py         — settings from .env
+    models/db.py           — SQLAlchemy models + title_overlay migrate
     services/
-      ingestion.py       — firecrawl + ai extraction + logo download
-      campaign.py        — theme gen + image ideas + flux prompt builder
-      flux.py            — flux kontext api client
-      image_processor.py — corner analysis + pillow logo compositing
-  cli/
-    pocc.py              — click + rich cli
-  data/images/           — local image storage
-    logos/
-    products/
-    generated/
-  docker-compose.yml
+      ingestion.py         — Firecrawl + AI extract + logo download
+      campaign.py          — themes, ideas, flux prompt, generate_image_title
+      flux.py              — Flux 2 Pro client
+      image_processor.py   — logo placement + title plan/composite
+  cli/pocc.py              — ingest | campaign | select | image | retitle | status | list
+  data/
+    fonts/                 — OpenSans, Montserrat, Playfair (bundled TTFs)
+    images/
+      logos/
+      products/
+      generated/           — {session}_raw.png, {session}_final.png
+  PROJECT_CONTEXT.md       — full design context
   requirements.txt
   .env.example
 ```
@@ -130,20 +180,39 @@ pocc/
 ---
 
 ## Logging
-The CLI includes structured logging output:
-- **File log**: All command operations are logged in detail at the `DEBUG` level inside `./pocc.log` in the format:
-  `[timestamp] [level] [command] message` (e.g., `[2025-07-04 12:30:45] [INFO] [ingest] Company saved: spicen (slug=spicen)`)
-- **Console feedback**: Crucial execution steps and warnings/errors are streamed to stderr to keep stdout clean.
-- **Timing**: The execution time is tracked and logged upon completion of each command.
+
+- **CLI file:** `./pocc.log` (`DEBUG`, `[timestamp] [level] [command] message`)
+- **CLI stderr:** progress + errors
+- **API:** stdout via `app/core/logging.py`
 
 ---
 
 ## Troubleshooting
 
-**Flux returns blank image:** Lower `guidance_scale` in `flux.py` (try 2.5).
+| Problem | Fix |
+|---------|-----|
+| Flux blank / drift | Lower guidance / tighten preserve line in prompt |
+| Logo missing | Check `data/images/logos/`; SVG uses PyMuPDF rasterize |
+| rembg slow first run | Downloads ~170MB U2Net once |
+| Title missing on final | Ensure generate finished; check `title_overlay` on session |
+| Title over product | Top band + forbid rects; try shorter headline or `retitle` |
+| DB column errors | Restart API (auto-adds `title_overlay`) |
+| CLI connection refused | Is `uvicorn` running on port 8000? |
 
-**Logo download failed / SVG support:** Logo URLs are automatically cleaned of query parameters prior to download. If the logo is an SVG, it is saved directly as-is to `data/images/logos/{company_slug}_logo.svg` and automatically rasterized to a PNG using `pymupdf` (fitz) so that no native Cairo C-libraries are required on Windows.
+---
 
-**rembg slow on first run:** It downloads the U2Net model (~170MB). Subsequent runs are fast.
+## Quick reference
 
-**Database already exists error:** Tables auto-create on startup. If schema changes, run `docker-compose down -v` and restart.
+| Task | Command |
+|------|---------|
+| Start server | `uvicorn app.main:app --reload --port 8000` |
+| Ingest | `python cli/pocc.py ingest --url <url>` |
+| Themes | `python cli/pocc.py campaign --company <slug> --topic "..."` |
+| Select theme | `python cli/pocc.py select --session <id> --theme <n>` |
+| Generate | `python cli/pocc.py image --session <id> --idea <n>` |
+| Retitle only | `python cli/pocc.py retitle --session <id> --headline "..."` |
+| Status | `python cli/pocc.py status --session <id>` |
+| List companies | `python cli/pocc.py list` |
+| Final image | `http://localhost:8000/api/v1/jobs/<id>/image` |
+
+For deeper design notes, schema, and service internals see **[PROJECT_CONTEXT.md](./PROJECT_CONTEXT.md)**.

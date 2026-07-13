@@ -70,8 +70,9 @@ class CampaignSession(Base):
     flux_prompt         = Column(Text)     # exact prompt sent to flux
     flux_job_id         = Column(String)
     raw_image_path      = Column(String)   # flux output before logo
-    final_image_path    = Column(String)   # after logo placement
+    final_image_path    = Column(String)   # after logo + title overlay
     logo_placement      = Column(JSON)     # {corner, x, y, width, height, brightness_map}
+    title_overlay       = Column(JSON)     # {headline, subhead, type_mood, placement...}
     status              = Column(String, default="pending")
     # status: pending | themes_generated | theme_selected | ideas_generated
     #         idea_selected | flux_running | flux_done | logo_placed | done | failed
@@ -104,3 +105,27 @@ def get_db():
 
 def create_tables():
     Base.metadata.create_all(bind=engine)
+    # lightweight migrate for existing PoC databases
+    _ensure_title_overlay_column()
+
+
+def _ensure_title_overlay_column():
+    """Add title_overlay if missing (create_all does not alter existing tables)."""
+    from sqlalchemy import text, inspect
+    try:
+        insp = inspect(engine)
+        if "campaign_sessions" not in insp.get_table_names():
+            return
+        cols = {c["name"] for c in insp.get_columns("campaign_sessions")}
+        if "title_overlay" in cols:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE campaign_sessions ADD COLUMN title_overlay JSON"
+            ))
+        logger = __import__("logging").getLogger("app.models.db")
+        logger.info("Migrated campaign_sessions: added title_overlay column")
+    except Exception as e:
+        __import__("logging").getLogger("app.models.db").warning(
+            "Could not ensure title_overlay column: %s", e
+        )

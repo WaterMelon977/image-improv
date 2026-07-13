@@ -1,9 +1,9 @@
 # POCC — Product Creative Platform
 ## Complete Project Context
 
-**Last updated:** 2025-07-04  
+**Last updated:** 2026-07-13  
 **Status:** PoC (Proof of Concept) — Synchronous FastAPI, no queue yet  
-**Tech stack:** Python 3.12 + FastAPI + PostgreSQL + Flux 2 Pro + Claude Sonnet 4.6
+**Tech stack:** Python 3.12+ + FastAPI + PostgreSQL (Supabase) + Flux 2 Pro + OpenAI + Pillow
 
 ---
 
@@ -12,55 +12,66 @@
 POCC is an end-to-end AI product image generation platform. Given a company website URL, it:
 
 1. **Scrapes** the website (Firecrawl)
-2. **Extracts** company intelligence, products, brand voice (Claude Sonnet)
+2. **Extracts** company intelligence, products, brand voice (OpenAI)
 3. **Downloads** product master images + logo + brand colors
 4. **Stores** everything in PostgreSQL + local filesystem
 5. **Generates** 5 campaign themes for any user-given topic
-6. **Generates** 3 image ideas per theme
-7. **Builds and previews** a compressed, surgical editing prompt (LLM-based)
-8. **Calls Flux 2 Pro** to edit the product image (img2img, preserving product) using the confirmed prompt
-9. **Analyzes** the generated image for optimal logo placement
-10. **Composites** the logo using Pillow (no AI)
-11. **Serves** the final PNG via FastAPI
+6. **Generates** 3 image ideas per theme (with top headroom for titles)
+7. **Builds and previews** a compressed, surgical Flux editing prompt (LLM-based)
+8. **Previews** an on-image title pack (headline / subhead / type_mood) — optional edit
+9. **Calls Flux 2 Pro** to edit the product image (img2img, preserving product)
+10. **Analyzes** the generated image for optimal logo placement
+11. **Composites** the logo using Pillow (no AI)
+12. **Composites** the title in a fixed top band (measure text box; forbid product + logo regions; clutter scoring)
+13. **Serves** the final PNG via FastAPI
+14. **Optionally re-titles** the same raw image without re-running Flux (`/apply-title`, `pocc retitle`)
 
 **User entry points:**
 - CLI: `python cli/pocc.py <command>`
-- API: `http://localhost:8000/api/v1` (FastAPI docs at `/docs`)
+- API: `http://localhost:8000/api/v1` (docs at `/docs`)
 
 ---
 
 ## File Structure
 
 ```
-pocc/
+image-improv/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                          # FastAPI app entry, table creation
+│   ├── main.py                          # FastAPI entry; create_tables on startup
 │   ├── api/
 │   │   ├── __init__.py
-│   │   └── routes.py                    # All 9 endpoints (POST/GET)
+│   │   └── routes.py                    # All endpoints + _postprocess_image (logo + title)
 │   ├── core/
 │   │   ├── __init__.py
-│   │   └── config.py                    # Settings from .env (Pydantic)
+│   │   ├── config.py                    # Settings from .env (Pydantic)
+│   │   └── logging.py                   # Backend logging setup
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── db.py                        # SQLAlchemy tables + session
+│   │   └── db.py                        # SQLAlchemy models + title_overlay migrate
 │   └── services/
 │       ├── __init__.py
 │       ├── ingestion.py                 # Firecrawl + AI extraction + logo download
-│       ├── campaign.py                  # Theme gen + image ideas + Flux prompt builder
-│       ├── flux.py                      # Flux Kontext API client (async polling)
-│       └── image_processor.py           # Corner brightness analysis + Pillow logo composite
+│       ├── campaign.py                  # Themes, ideas, flux prompt, generate_image_title
+│       ├── flux.py                      # Flux 2 Pro API client (async polling)
+│       └── image_processor.py           # Logo placement + title plan/composite
 ├── cli/
-│   └── pocc.py                          # Click CLI + Rich UI (progress polling)
+│   └── pocc.py                          # Click + Rich CLI
 ├── data/
-│   └── images/                          # Local image storage
-│       ├── logos/                       # Downloaded company logos (PNG)
-│       ├── products/                    # Master product images (PNG)
-│       └── generated/                   # Flux output + final composited images
-├── requirements.txt                     # All Python dependencies
-├── .env.example                         # Template for API keys / settings
-└── README.md                            # Setup + usage guide
+│   ├── fonts/                           # Bundled TTFs for on-image titles
+│   │   ├── OpenSans-Bold.ttf
+│   │   ├── OpenSans-SemiBold.ttf
+│   │   ├── Montserrat-Bold.ttf
+│   │   ├── Montserrat.ttf               # optional variable
+│   │   └── PlayfairDisplay.ttf          # luxury_editorial
+│   └── images/
+│       ├── logos/                       # Company logos (PNG/SVG)
+│       ├── products/                    # Master product images
+│       └── generated/                   # {session}_raw.png + {session}_final.png
+├── requirements.txt
+├── .env.example
+├── README.md                            # Setup + usage
+└── PROJECT_CONTEXT.md                   # This file
 ```
 
 ---
@@ -73,22 +84,22 @@ pocc/
 CREATE TABLE companies (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    slug TEXT NOT NULL UNIQUE,           -- human-readable ref, e.g. "spicen_foods"
+    slug TEXT NOT NULL UNIQUE,           -- e.g. "spicen_foods"
     website_url TEXT NOT NULL UNIQUE,
     industry TEXT,
     description TEXT,
     brand_voice JSONB,                    -- ["bold", "energetic", "premium"]
-    target_audience JSONB,                -- ["millennials", "foodie community"]
-    marketing_angles JSONB,               -- ["sustainability", "premium ingredients"]
-    content_pillars JSONB,                -- ["product quality", "lifestyle"]
-    primary_color TEXT,                   -- hex: #FF5733
+    target_audience JSONB,
+    marketing_angles JSONB,
+    content_pillars JSONB,
+    primary_color TEXT,                   -- hex — used as title accent underline
     secondary_color TEXT,
     accent_color TEXT,
-    logo_url TEXT,                        -- original scraped URL
-    logo_local_path TEXT,                 -- ./data/images/logos/spicen_foods_logo.png
-    logo_brightness TEXT,                 -- "dark" | "light" (used for logo placement)
+    logo_url TEXT,
+    logo_local_path TEXT,
+    logo_brightness TEXT,                 -- "dark" | "light"
     social_media_profile JSONB,           -- {instagram_tone, cta_style, emoji_usage}
-    crawl_status TEXT,                    -- "pending" | "done" | "failed"
+    crawl_status TEXT,
     created_at TIMESTAMPTZ
 );
 ```
@@ -101,9 +112,9 @@ CREATE TABLE products (
     company_id TEXT REFERENCES companies,
     name TEXT NOT NULL,
     description TEXT,
-    benefits JSONB,                       -- ["organic", "non-gmo", "gluten-free"]
-    image_urls JSONB,                     -- [urls scraped from website]
-    master_image_path TEXT,               -- ./data/images/products/{id}_master.png
+    benefits JSONB,
+    image_urls JSONB,
+    master_image_path TEXT,
     created_at TIMESTAMPTZ
 );
 ```
@@ -114,188 +125,143 @@ CREATE TABLE products (
 CREATE TABLE campaign_sessions (
     id TEXT PRIMARY KEY,
     company_id TEXT REFERENCES companies,
-    topic TEXT,                           -- "summer pool party"
-    themes JSONB,                         -- [{number, theme_name, concept, campaign_angle, best_product_name, mood}]
-    selected_theme JSONB,                 -- the one user picked
+    topic TEXT,
+    themes JSONB,                         -- 5 theme objects
+    selected_theme JSONB,
     selected_product_id TEXT REFERENCES products,
-    image_ideas JSONB,                    -- ["idea1", "idea2", "idea3"]
-    selected_idea_index INT,              -- 0-based into image_ideas
-    flux_prompt TEXT,                     -- exact prompt sent to Flux API
-    flux_job_id TEXT,                     -- returned from Flux (for audit)
-    raw_image_path TEXT,                  -- ./data/images/generated/{session_id}_raw.png
-    final_image_path TEXT,                -- ./data/images/generated/{session_id}_final.png (with logo)
-    logo_placement JSONB,                 -- {best_corner, brightness_map, x, y, logo_width, logo_height, ...}
-    status TEXT,                          -- "themes_generated" | "ideas_generated" | "flux_running" | "done" | "failed"
+    image_ideas JSONB,                    -- 3 idea strings
+    selected_idea_index INT,              -- 0-based
+    flux_prompt TEXT,
+    flux_job_id TEXT,
+    raw_image_path TEXT,                  -- Flux output before logo/title
+    final_image_path TEXT,                -- after logo + title
+    logo_placement JSONB,                 -- corner, coords, brightness_map, logo size
+    title_overlay JSONB,                  -- headline, subhead, type_mood, placement meta
+    status TEXT,                          -- themes_generated | ideas_generated | flux_running | done | failed
     error_message TEXT,
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
 );
 ```
 
+**Schema migration:** `create_tables()` runs `Base.metadata.create_all` then `_ensure_title_overlay_column()` which `ALTER TABLE ... ADD COLUMN title_overlay JSON` if missing (PoC-friendly; no Alembic yet).
+
+**Example `title_overlay` payload:**
+
+```json
+{
+  "headline": "POOLSIDE HAPPY HOUR",
+  "headline_source": "Poolside Happy Hour",
+  "subhead": "Mango Margarita Frost",
+  "type_mood": "festive_bold",
+  "anchor": "top_center",
+  "title_rect": [120, 16, 400, 58],
+  "font_size": 24,
+  "display_font": "Montserrat-Bold.ttf",
+  "text_color": [255, 255, 255],
+  "scrim_dark": true,
+  "product_rect": [25, 92, 281, 471],
+  "logo_rect": [10, 400, 120, 480],
+  "fallbacks": [],
+  "previewed": false
+}
+```
+
 ---
 
 ## API Endpoints
 
+Base path: `/api/v1`
+
 ### POST /ingest
-Ingest a company URL.
-
-**Request:**
-```json
-{ "url": "https://spicenfood.com" }
-```
-
-**Response (success):**
-```json
-{
-  "status": "success",
-  "company_name": "Spicen Foods",
-  "company_slug": "spicen_foods",
-  "industry": "Food & Beverage",
-  "products_found": 5,
-  "logo_saved": true,
-  "brand_colors": {
-    "primary": "#FF5733",
-    "secondary": "#33CCFF",
-    "accent": null
-  }
-}
-```
+Ingest a company URL → scrape, extract, save products + logo.
 
 ### POST /campaign
-Generate 5 campaign themes.
-
-**Request:**
-```json
-{ "company_slug": "spicen_foods", "topic": "summer pool party" }
-```
-
-**Response:**
-```json
-{
-  "session_id": "uuid",
-  "topic": "summer pool party",
-  "themes": [
-    {
-      "number": 1,
-      "theme_name": "Backyard Freedom Party",
-      "concept": "Celebrate with frozen cocktails and friends",
-      "campaign_angle": "Festive gatherings",
-      "best_product_name": "Mango Margarita Frost",
-      "mood": "energetic"
-    },
-    ...
-  ]
-}
-```
+Generate 5 campaign themes for `{ company_slug, topic }` → returns `session_id`.
 
 ### POST /select
-Select a theme → auto-pick best product → generate 3 image ideas.
-
-**Request:**
-```json
-{ "session_id": "uuid", "theme_number": 2 }
-```
-
-**Response:**
-```json
-{
-  "session_id": "uuid",
-  "selected_theme": { ... },
-  "selected_product": "Strawberry Daiquiri Frost",
-  "has_master_image": true,
-  "image_ideas": [
-    { "number": 1, "idea": "Sunset beachside with pool reflections" },
-    { "number": 2, "idea": "Neon nightlife celebration" },
-    { "number": 3, "idea": "Tropical garden poolside lounge" }
-  ]
-}
-```
+Select theme by number → best product + 3 image ideas.
 
 ### POST /preview-prompt
-Generate and return the LLM-compressed Flux prompt for user review. (Does NOT call Flux API yet, cheap operation).
+LLM-compressed Flux prompt for review (no Flux call).  
+Request: `{ session_id, idea_number, user_tweak? }`  
+Persists `flux_prompt` + `selected_idea_index` on session.
 
-**Request:**
-```json
-{
-  "session_id": "uuid",
-  "idea_number": 3
-}
-```
+### POST /preview-title
+On-image title pack for review (no Flux call).  
+Request:
 
-**Response:**
 ```json
 {
   "session_id": "uuid",
   "idea_number": 3,
-  "selected_idea": "Tropical garden poolside lounge",
-  "flux_prompt": "PRESERVE EXACTLY: Product packaging, label text, and scale.\nCHANGE ONLY: Sunset beachside with turquoise water reflections.\nREALISM: DSLR product photography, soft focus, natural highlights.",
-  "ready_to_generate": true,
-  "next": "POST /generate-from-prompt with session_id and flux_prompt"
+  "headline": "optional override",
+  "subhead": "optional",
+  "type_mood": "festive_bold"
 }
 ```
+
+Persists on `session.title_overlay` with `previewed: true` so generate reuses copy.
 
 ### POST /generate-from-prompt
-User confirmed or edited the Flux prompt. Call Flux 2 Pro and run the downstream processing (logo placement + composition).
+Confirmed Flux prompt → Flux → logo → title → final.
 
-**Request:**
-```json
-{
-  "session_id": "uuid",
-  "flux_prompt": "PRESERVE EXACTLY: Product packaging, label text, and scale.\nCHANGE ONLY: Sunset beachside with turquoise water reflections.\nREALISM: DSLR product photography, soft focus, natural highlights."
-}
-```
+Request: `{ session_id, flux_prompt }`
 
-**Response:**
+Response includes:
+
 ```json
 {
   "session_id": "uuid",
   "status": "done",
+  "selected_idea": "...",
   "flux_prompt_used": "...",
-  "logo_placement": {
-    "corner": "bottom_right",
-    "brightness_map": {
-      "top_left": 180,
-      "top_right": 200,
-      "bottom_left": 80,
-      "bottom_right": 150
-    }
+  "logo_placement": { "corner": "bottom_right", "brightness_map": {} },
+  "title_overlay": {
+    "headline": "...",
+    "subhead": "...",
+    "type_mood": "festive_bold",
+    "anchor": "top_left"
   },
-  "dominant_colors": ["#FF5733", "#33CCFF", "#FFCC00"],
-  "image_url": "http://localhost:8000/api/v1/jobs/{session_id}/image",
-  "raw_url": "http://localhost:8000/api/v1/jobs/{session_id}/raw"
+  "dominant_colors": ["#..."],
+  "image_url": "http://localhost:8000/api/v1/jobs/{id}/image",
+  "raw_url": "http://localhost:8000/api/v1/jobs/{id}/raw"
 }
 ```
 
-### POST /image
-*(Deprecated / Legacy CLI support)* Generate final image using Flux + logo placement in a single synchronous call.
+### POST /apply-title
+Re-composite **logo + title** on existing `raw_image_path` (**no Flux**).
 
-**Request:**
 ```json
-{ "session_id": "uuid" }
+{
+  "session_id": "uuid",
+  "headline": "optional override",
+  "subhead": "optional",
+  "type_mood": "festive_bold",
+  "regenerate_copy": false
+}
 ```
-**Query params:** `?idea_number=3`
+
+| Mode | Behavior |
+|------|----------|
+| `headline` set | Use override copy |
+| `regenerate_copy: true` | New LLM title |
+| neither | Reuse last / previewed title |
+
+CLI: `pocc retitle --session <id> --headline "..." --mood festive_bold`
+
+### POST /image
+Legacy one-shot: build prompt + Flux + postprocess (logo + title). Prefer preview → generate flow.
 
 ### GET /jobs/{session_id}/status
-Poll job status.
-
-**Response:**
-```json
-{ "session_id": "uuid", "status": "done", "error": null }
-```
-
 ### GET /jobs/{session_id}/image
-Download final composited image (PNG).
+Final PNG (logo + title).
+
+### GET /jobs/{session_id}/raw
+Flux-only PNG.
 
 ### GET /companies
-List all ingested companies.
-
-**Response:**
-```json
-[
-  { "slug": "spicen_foods", "name": "Spicen Foods", "industry": "Food & Beverage", "products": 5 },
-  ...
-]
-```
+List ingested companies.
 
 ---
 
@@ -303,158 +269,157 @@ List all ingested companies.
 
 ### ingestion.py
 
-**Firecrawl + AI extraction pipeline:**
-
-1. `scrape_url(url)` — calls Firecrawl API, returns markdown + HTML + metadata
-2. `extract_logo_url(html, base_url, metadata)` — tries 4 methods (strips query parameters from returned URLs):
-   - og:image if contains 'logo'
-   - DOM selectors (img.logo, a.logo img, etc.)
-   - link rel=apple-touch-icon
-   - fallback: /favicon.ico
-3. `download_and_process_logo(logo_url, company_slug)` — downloads logo (if SVG, saves as `.svg` to local filesystem and converts to PNG using `pymupdf`), removes background (rembg if JPG), converts to RGBA PNG, computes brightness (dark/light)
-4. `extract_brand_colors(html, logo_path)` — extracts from CSS vars + meta theme-color + logo palette (colorthief)
-5. `download_product_image(image_url, product_id)` — downloads first product image as master PNG
-6. `extract_company_intelligence(markdown)` — Claude Sonnet call with thinking enabled, structured JSON schema
-
-**Thinking enabled:** Uses `max_tokens: 2000` for reasoning, faster & cheaper than o1.
+1. `scrape_url` — Firecrawl → markdown + HTML + metadata  
+2. `extract_logo_url` — multiple heuristics; strip query params  
+3. `download_and_process_logo` — SVG via PyMuPDF → PNG; rembg when needed  
+4. `extract_brand_colors` — CSS / theme-color / logo palette  
+5. `download_product_image` — master PNG  
+6. `extract_company_intelligence` — structured company + products + `social_media_profile`
 
 ### campaign.py
 
-**Campaign generation:**
-
-1. `generate_themes(company_dict, topic)` — Claude Sonnet with thinking, returns 5 themes with auto-selected best product per theme
-2. `generate_image_ideas(company, theme, product)` — 3 scene descriptions (only environment, not product)
-3. `build_flux_prompt(company, theme, product, idea)` — calls LLM to build a compressed, surgical 3-line Flux prompt (under 70 words)
-4. `select_best_product(products, theme)` — finds product by name match, fuzzy fallback
+1. `generate_themes` — 5 themes (name, concept, angle, product, mood, ambience)  
+2. `generate_image_ideas` — 3 intensity variants; **product left ~60%, mid-lower; upper ~15% open headroom for title; right for logo**  
+3. `build_flux_prompt` — surgical 3-line edit prompt (&lt;70 words); physical open upper frame; **no marketing language, no typography instructions**  
+4. `generate_image_title` — LLM returns `{ headline, subhead, type_mood }` from brand voice, theme, product, idea, social profile  
+5. `select_best_product` — exact → fuzzy → substring → first with master image  
 
 ### flux.py
 
-**Flux 2 Pro API integration:**
-
-1. `generate_with_flux(master_image_path, prompt, session_id)` — async function:
-   - Scales the master image down to a maximum of 1MP (1,000,000 pixels) if it exceeds 1MP, then loads it as base64
-   - POST to `https://api.bfl.ai/v1/flux-2-pro`
-   - Polls BFL using the returned `polling_url` (or defaults to `get_result`) every 4 seconds (up to 2 min timeout)
-   - Downloads result image
-   - Saves as `{session_id}_raw.png`
-   - Returns `(raw_path, flux_job_id)`
-
-**Safety settings:** `safety_tolerance: 2`, `prompt_upsampling: False`
+1. `generate_with_flux` — scale master ≤1MP, POST flux-2-pro, poll, save `{session_id}_raw.png`  
+2. Safety: `safety_tolerance: 2`, `prompt_upsampling: False`
 
 ### image_processor.py
 
-**Logo placement analyzer:**
+**Logo**
 
-1. `analyze_image_for_logo_placement(image_path)` — reads generated image:
-   - Samples brightness in 4 corners (15% of image size)
-   - Assumes logo is dark → picks brightest corner for max contrast
-   - Computes pixel coordinates (x, y, logo_w)
-   - Returns placement dict
+1. `analyze_image_for_logo_placement` — 4-corner brightness; darkest-logo → brightest corner  
+2. `composite_logo` — resize ~20% width, drop shadow, paste RGBA  
 
-**Logo compositing:**
+**Title overlay (Instagram-style on-image headline)**
 
-1. `composite_logo(base_image_path, logo_path, placement, session_id)` — Pillow:
-   - Opens base (RGBA) + logo (RGBA)
-   - Resizes logo to 12% of image width
-   - Adds soft drop shadow (4px blur, 80% opacity) behind logo
-   - Pastes logo at computed (x, y) with alpha channel preserved
-   - Saves as `{session_id}_final.png`
-   - Returns final path
+Layout contract (fractions of image size):
+
+| Constant | Value | Role |
+|----------|-------|------|
+| `TITLE_BAND_FRAC` | 0.15 | Top band for title only |
+| `PRODUCT_RECT_FRAC` | (0.05, 0.18, 0.55, 0.92) | Forbid text over product |
+| Edge padding | ~3% | Keep type off edges |
+
+Pipeline:
+
+1. `resolve_type_mood` — normalize mood; fallback from `brand_voice` keywords  
+2. `_resolve_font_files` + `_mood_recipe` — font file + size scale + uppercase  
+3. `plan_title_placement` — measure text bbox; candidates top_left/center/right; reject product/logo intersections; score clutter + brightness; deprioritize same side as logo; fallback shrink → drop subhead → force safe slot  
+4. `composite_title` — soft top scrim, text + shadow, brand-color accent underline  
+5. `apply_title_overlay` — plan + composite in one call  
+
+**Type mood → font**
+
+| type_mood | Display font | Casing |
+|-----------|--------------|--------|
+| `minimal_clean` | OpenSans-Bold | Title case |
+| `festive_bold` | Montserrat-Bold | UPPERCASE |
+| `luxury_editorial` | PlayfairDisplay (fallback Montserrat) | Title case |
+| `playful_soft` | OpenSans-Bold | Title case |
+| `bold_street` | Montserrat-Bold | UPPERCASE |
+
+**Postprocess order** (`routes._postprocess_image`):
+
+```
+raw.png
+  → analyze logo placement
+  → composite_logo → (temp) final
+  → resolve title pack (override | previewed | last | LLM | theme fallback)
+  → apply_title_overlay → final.png
+  → persist logo_placement + title_overlay
+```
 
 ---
 
 ## CLI Usage
 
-All commands are in `cli/pocc.py` using Click + Rich for pretty output.
-
-### CLI Logging
-- **Log file:** `./pocc.log` captures all `DEBUG` level structured output (`[timestamp] [level] [command] message`).
-- **Standard error stream:** Sends all `DEBUG` and `INFO` messages directly to stderr so that detailed HTTP request/response metrics, timings, and progress statuses are visible in the CLI console.
-- **Timing:** Command duration is logged for performance tracking on every run.
-
-### Backend Logging
-- **Setup:** Configured in [app/core/logging.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/core/logging.py) and initialized on startup in [app/main.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/main.py).
-- **Target:** Streams detailed debug information to `stdout` so that logs appear in the Uvicorn/server console.
-- **Format:** `[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s`
-- **Coverage:** Logs are implemented across the entire service pipeline:
-  - **Ingestion ([ingestion.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/services/ingestion.py)):** Scraper payload sizes, logo URL detection rules, PyMuPDF SVG parsing, `rembg` invocation, brand color extraction details, and product image downloads.
-  - **Campaign ([campaign.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/services/campaign.py)):** Theme generation prompts/responses, fuzzy product matching results, and Flux Kontext prompts.
-  - **Flux ([flux.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/services/flux.py)):** Job submission, status polling (attempt numbers and statuses), and result downloads.
-  - **Image Processor ([image_processor.py](file:///c:/Users/Upendra%20Ravuri/Desktop/image-improv/app/services/image_processor.py)):** Corner brightness crop metrics, placement calculations, Pillow compositing transformations, and ColorThief palettes.
+Commands in `cli/pocc.py` (Click + Rich). Base URL: `http://localhost:8000/api/v1`.
 
 ```bash
-# 1. Ingest company
+# 1. Ingest
 python cli/pocc.py ingest --url https://spicenfood.com
 
-# 2. Generate themes
+# 2. Themes
 python cli/pocc.py campaign --company spicen_foods --topic "summer pool party"
 
-# 3. Select theme (auto-generates 3 ideas)
+# 3. Select theme → ideas
 python cli/pocc.py select --session <id> --theme 2
 
-# 4. Generate image (polls Flux until done, shows progress)
-python cli/pocc.py image --session <id> --idea 3
+# 4. Generate (3-step interactive)
+python cli/pocc.py image --session <id> --idea 1
+#   Step 1/3 — Flux prompt (edit optional)
+#   Step 2/3 — On-image title (edit optional)
+#   Step 3/3 — Flux → logo → title
 
-# 5. Check status
+# 5. Retitle without Flux
+python cli/pocc.py retitle --session <id> --headline "Poolside Happy Hour" --mood festive_bold
+python cli/pocc.py retitle --session <id> --regenerate
+python cli/pocc.py retitle --session <id>   # re-composite last title
+
+# 6. Status / list
 python cli/pocc.py status --session <id>
-
-# 6. List companies
 python cli/pocc.py list
 ```
+
+### CLI Logging
+- File: `./pocc.log` at DEBUG  
+- Stderr: progress + errors  
+- Timing per command  
+
+### Backend Logging
+- `app/core/logging.py` → stdout for Uvicorn  
+- Coverage: ingestion, campaign, flux, image_processor, routes  
 
 ---
 
 ## Design Decisions
 
-### 1. Synchronous FastAPI (no Celery queue yet)
+### 1. Synchronous FastAPI (no Celery yet)
+PoC simplicity; endpoints block up to ~2 min (Flux).
 
-**Why:** PoC speed. Endpoints block until completion, user waits max ~2 min.
+### 2. Logo assumed dark
+Brightest corner for contrast. Override `logo_brightness` in DB if needed.
 
-**Downside:** Max ~5 concurrent requests before timeouts.
+### 3. Deterministic placement analyzers
+Logo corners + title band/forbid rects: fast, reproducible. Not vision-model product masks (future).
 
-**When to add Celery:** After PoC proves the concept. Then switch to async job submission + polling.
+### 4. Master image locked
+Every Flux call uses original master — no cumulative drift.
 
-### 2. Logo assumed always dark
+### 5. Flux 2 Pro img2img (not txt2img)
+Product fidelity over scene freedom.
 
-**Why:** 80% of logos are dark. Simplifies placement logic.
+### 6. Titles via Pillow, not Flux
+Flux text is unreliable. Copy = LLM; pixels = Pillow + bundled fonts. Same pattern as logo.
 
-**Fallback:** If logo looks bad, manually set `logo_brightness = "light"` in DB.
+### 7. Separate copy vs layout
+- **Copy / aura intent:** `generate_image_title` + brand voice  
+- **Look:** font packs + recipes + contrast/scrim  
+- Human can edit via `preview-title` / CLI / `retitle`
 
-### 3. Image analyzer is deterministic, not AI
+### 8. Composition prompts reserve title headroom
+Ideas + Flux prompts keep upper ~15% relatively open so titles rarely fight busy props.
 
-**Why:** Speed + reproducibility. Corner brightness can be recomputed identically.
-
-**Trade-off:** Won't adapt to complex image layouts (e.g., product in bottom-right). For PoC, acceptable.
-
-### 4. Master image locked, never re-edited
-
-**Why:** Prevents visual drift. Every Flux call reads the original master.
-
-**Why not cache:** S3 would be overkill for PoC. Local `master_image_path` is instant.
-
-### 5. Flux 2 Pro (img2img) not txt2img
-
-**Why:** Product consistency. txt2img regenerates the product. img2img edits only the background.
-
-**Trade-off:** More expensive than txt2img, but necessary for product fidelity.
-
-### 6. Claude Sonnet with thinking
-
-**Why:** Better brand voice extraction + theme generation quality. Thinking budget of 2000 tokens is cheap.
-
-**Cost vs. quality:** ~40% more expensive than non-thinking, but 60% better output. Worth it for PoC.
+### 9. Title iteration without Flux
+`/apply-title` recomposites from raw → cheap taste iteration.
 
 ---
 
 ## Configuration
 
-`.env` file (copy from `.env.example`):
+`.env` (from `.env.example`):
 
 ```
-DATABASE_URL=postgresql://postgres:password@localhost:5432/pocc
-FIRECRAWL_API_KEY=your_firecrawl_key
-ANTHROPIC_API_KEY=your_anthropic_key
-FLUX_API_KEY=your_flux_key
+DATABASE_URL=postgresql://...
+FIRECRAWL_API_KEY=...
+OPENAI_API_KEY=...
+FLUX_API_KEY=...
 IMAGE_DIR=./data/images
 HOST=0.0.0.0
 PORT=8000
@@ -466,85 +431,67 @@ PORT=8000
 
 ### Limitations
 
-1. **Product auto-selection is fuzzy** — if theme mentions "Margarita" but product is "Tropical Margarita", match may fail. Workaround: manually specify product.
-2. **Logo placement doesn't rotate** — assumes corners work. Complex layouts (e.g., center product) aren't handled.
-3. **Flux img2img quality varies** — sometimes products drift. Mitigation: lower `guidance_scale` to 2.5.
-4. **No retry on Flux failure** — if API times out, user re-runs command.
-5. **No QA scoring** — no automatic rejection of bad outputs (was removed to simplify PoC).
+1. **Product auto-selection is fuzzy** — name mismatch can pick wrong product  
+2. **Logo placement is corner-only** — no rotation / smart product avoidance  
+3. **Product forbid rect is fixed** — not a real segmentation mask; tall products can still clip title band occasionally  
+4. **Flux quality varies** — product can drift; prompt + guidance trade-offs  
+5. **No retry queue** on Flux timeout  
+6. **No QA scoring** of final creatives  
+7. **Font packs are small** — 4–5 moods, not full brand design systems  
 
-### Next Steps (Priority Order)
+### Next steps (priority)
 
-1. **Celery + Redis queue** — handle 10+ concurrent jobs
-2. **QA scoring** — auto-reject images where product drifts > threshold
-3. **S3/R2 storage** — remove local filesystem dependency
-4. **Feedback loop** — `/revise` endpoint to iteratively tweak campaigns (like n8n WF-023)
-5. **Batch generation** — generate 5 variations of same idea, user picks best
-6. **Template management** — versioned Flux prompts, A/B test different styles
-7. **Metrics dashboard** — track theme popularity, image quality over time
-8. **Telegram integration** — wire CLI commands to Telegram bot (replace n8n WF-020 through WF-024)
+1. Celery + Redis for concurrent jobs  
+2. rembg / segmentation product mask for tighter title safety  
+3. Title layout templates (hero / bar / editorial packs)  
+4. QA scoring (product drift detection)  
+5. S3/R2 storage  
+6. Batch variations + pick best  
+7. Telegram / web UI  
+8. Metrics dashboard  
 
 ---
 
 ## Testing Checklist
 
-- [ ] Docker Postgres starts: `docker-compose up -d && docker ps`
-- [ ] Server starts: `uvicorn app.main:app --reload`
-- [ ] Logs show "Uvicorn running on http://0.0.0.0:8000"
-- [ ] FastAPI docs work: `http://localhost:8000/docs`
-- [ ] `pocc ingest --url https://example.com` succeeds (takes ~30-60 sec)
-- [ ] Company saved to DB: check PostgreSQL or GET /companies
-- [ ] Logo downloaded: check `./data/images/logos/`
-- [ ] Products stored: count rows in products table
-- [ ] `pocc campaign --company <slug> --topic "test"` returns 5 themes
-- [ ] `pocc select --session <id> --theme 1` returns 3 image ideas
-- [ ] Product has master image: check `master_image_path` in DB
-- [ ] `pocc image --session <id> --idea 1` runs Flux (polls every 3s)
-- [ ] Image appears at `/api/v1/jobs/<id>/image` after ~30-45 sec
-- [ ] Logo is visible and well-placed on generated image
-- [ ] Open image in browser or download via curl
+- [ ] Server starts: `uvicorn app.main:app --reload --port 8000`
+- [ ] DB reachable; `title_overlay` column exists on `campaign_sessions`
+- [ ] Fonts present under `data/fonts/`
+- [ ] FastAPI docs: `http://localhost:8000/docs`
+- [ ] `pocc list` / ingest works
+- [ ] `pocc campaign` → 5 themes + session_id
+- [ ] `pocc select` → 3 ideas
+- [ ] `pocc image` → Flux prompt panel → title panel → final URL
+- [ ] Final image shows logo **and** title in top band
+- [ ] Title does not sit on logo; product mid-frame mostly clear
+- [ ] `pocc retitle --headline "..."` updates final without new Flux job
+- [ ] Raw URL has no logo/title; final has both
 
 ---
 
 ## Debugging
 
-### Flux returns blank
-
-Lower `guidance_scale` in `flux.py` line 45 from 3.5 → 2.5.
-
-### Logo not found
-
-Check `data/images/logos/` — if empty, website blocked scrapers. Manually place logo file + update `logo_local_path` in DB.
-
-### rembg slow
-
-First run downloads 170MB model. Subsequent runs instant. Let it finish (takes 2-5 min).
-
-### Claude extraction returns garbage
-
-Check that `ANTHROPIC_API_KEY` is valid. If rate-limited, wait 1 min before retrying.
-
-### Flux API timeout
-
-Flux sometimes times out. Retry with same `session_id`—data is already saved.
-
-### Product drifts in generated image
-
-Increase constraints in Flux prompt or lower `guidance_scale` to 1.5 (more faithful to input, less scene change).
+| Issue | Action |
+|-------|--------|
+| Flux blank / drift | Tighten preserve line; lower guidance if configured |
+| Logo missing | Check `data/images/logos/`; fix `logo_local_path` |
+| rembg slow first run | Allow U2Net download (~170MB) |
+| Title LLM fail | Fallback uses theme/product name; check `OPENAI_API_KEY` |
+| Title over busy area | Shorter headline; different mood; `retitle`; improve headroom in idea |
+| `title_overlay` missing column | Restart API or run migrate via `create_tables()` |
+| CLI connection refused | Uvicorn not running on :8000 |
 
 ---
 
 ## Deployment Notes (Later)
 
-When moving to production:
-
-1. **Use Celery + Redis** for async job queue
-2. **Switch to S3/R2** for image storage (not local filesystem)
-3. **Add authentication** (API key headers)
-4. **Use Kubernetes** for worker autoscaling
-5. **Set up Prometheus + Grafana** for monitoring
-6. **Add Sentry** for error tracking
-7. **Rate limit** Flux calls (10/min, queue excess)
-8. **Wire to Telegram** or web dashboard for user access
+1. Celery + Redis  
+2. S3/R2 for images  
+3. Auth on API  
+4. Worker autoscaling  
+5. Monitoring + Sentry  
+6. Rate-limit Flux  
+7. Telegram or dashboard UI  
 
 ---
 
@@ -552,28 +499,30 @@ When moving to production:
 
 | Task | Command |
 |------|---------|
-| Start server | `uvicorn app.main:app --reload` |
-| Start DB | `docker-compose up -d` |
-| Ingest company | `pocc ingest --url <url>` |
-| Generate themes | `pocc campaign --company <slug> --topic <topic>` |
-| Select theme | `pocc select --session <id> --theme <n>` |
-| Generate image | `pocc image --session <id> --idea <n>` |
-| Check status | `pocc status --session <id>` |
-| List companies | `pocc list` |
+| Start server | `uvicorn app.main:app --reload --port 8000` |
+| Ingest | `python cli/pocc.py ingest --url <url>` |
+| Themes | `python cli/pocc.py campaign --company <slug> --topic <topic>` |
+| Select theme | `python cli/pocc.py select --session <id> --theme <n>` |
+| Generate (+ title) | `python cli/pocc.py image --session <id> --idea <n>` |
+| Retitle only | `python cli/pocc.py retitle --session <id> [--headline ...] [--mood ...] [--regenerate]` |
+| Status | `python cli/pocc.py status --session <id>` |
+| List companies | `python cli/pocc.py list` |
+| Final image | `http://localhost:8000/api/v1/jobs/<id>/image` |
+| Raw image | `http://localhost:8000/api/v1/jobs/<id>/raw` |
 | API docs | `http://localhost:8000/docs` |
-| View image | `http://localhost:8000/api/v1/jobs/<id>/image` |
 
 ---
 
 ## Contact & Support
 
-This is a PoC built by Claude. Designed for solo developer iteration. For questions on specific components:
+PoC for solo iteration. Component map:
 
-- **Ingestion issues:** Check `app/services/ingestion.py` (Firecrawl, AI extraction, logo download)
-- **Campaign generation:** Check `app/services/campaign.py` (Claude prompts, theme/idea generation)
-- **Flux issues:** Check `app/services/flux.py` (API polling, image download)
-- **Logo placement:** Check `app/services/image_processor.py` (corner brightness analysis, Pillow compositing)
-- **API/routing:** Check `app/api/routes.py` (endpoints, request/response handling)
-- **CLI:** Check `cli/pocc.py` (Click commands, Rich UI, HTTP polling)
-
-Modify as needed for your use case.
+| Area | File |
+|------|------|
+| Ingestion | `app/services/ingestion.py` |
+| Campaign / titles copy | `app/services/campaign.py` |
+| Flux | `app/services/flux.py` |
+| Logo + title pixels | `app/services/image_processor.py` |
+| API / postprocess | `app/api/routes.py` |
+| Schema | `app/models/db.py` |
+| CLI | `cli/pocc.py` |

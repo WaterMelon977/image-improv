@@ -14,13 +14,15 @@ from app.models.db import get_db, Company, Product, CampaignSession
 from app.services.ingestion import ingest_company
 from app.services.campaign import (
     generate_themes, generate_image_ideas,
-    build_flux_prompt, select_best_product
+    build_flux_prompt, select_best_product,
+    generate_image_title,
 )
 from app.services.flux import generate_with_flux
 from app.services.image_processor import (
     analyze_image_for_logo_placement,
     composite_logo,
-    extract_dominant_colors
+    extract_dominant_colors,
+    apply_title_overlay,
 )
 
 router = APIRouter()
@@ -54,6 +56,21 @@ class FluxPreviewRequest(BaseModel):
 class FluxGenerateRequest(BaseModel):
     session_id: str
     flux_prompt: str   # the confirmed (or user-edited) prompt to send to Flux
+
+class TitlePreviewRequest(BaseModel):
+    session_id: str
+    idea_number: int | None = None  # defaults to session.selected_idea_index + 1
+    headline: str | None = None     # optional override (skip LLM if provided with subhead/mood)
+    subhead: str | None = None
+    type_mood: str | None = None
+
+class ApplyTitleRequest(BaseModel):
+    """Re-composite logo + title on an existing raw image (no Flux call)."""
+    session_id: str
+    headline: str | None = None
+    subhead: str | None = None
+    type_mood: str | None = None
+    regenerate_copy: bool = False  # force a new LLM title if no headline override
 
 
 # -- helper --
@@ -381,34 +398,14 @@ async def generate_image(req: GenerateImageRequest, idea_number: int, db: Sessio
     db.commit()
     logger.info("Flux job %s completed. Raw image saved to %s", flux_job_id, raw_path)
 
-    # analyze generated image for logo placement
-    logger.debug("Analyzing generated image for logo placement...")
-    placement = analyze_image_for_logo_placement(raw_path)
-
-    # extract dominant colors for reporting
-    logger.debug("Extracting dominant colors...")
-    dominant_colors = extract_dominant_colors(raw_path)
-
-    # composite logo if available
-    final_path = raw_path  # default: no logo
-    if company.logo_local_path and Path(company.logo_local_path).exists():
-        logger.info("Logo found at %s. Compositing onto image...", company.logo_local_path)
-        final_path = composite_logo(
-            base_image_path=raw_path,
-            logo_path=company.logo_local_path,
-            placement=placement,
-            session_id=session.id
-        )
-        session.status = "logo_placed"
-    else:
-        logger.warning("No local logo found at %s. Skipping compositing.", company.logo_local_path)
-        session.status = "done_no_logo"
-
-    session.final_image_path = final_path
-    session.logo_placement = placement
-    session.status = "done"
-    db.commit()
-    logger.info("Image processing complete for session %s. Status set to done.", session.id)
+    post = _postprocess_image(
+        session=session,
+        company=company,
+        product=product,
+        raw_path=raw_path,
+        idea=chosen_idea,
+        db=db,
+    )
 
     return {
         "session_id": session.id,
@@ -416,12 +413,18 @@ async def generate_image(req: GenerateImageRequest, idea_number: int, db: Sessio
         "selected_idea": chosen_idea,
         "flux_prompt_used": flux_prompt,
         "logo_placement": {
-            "corner": placement["best_corner"],
-            "brightness_map": placement["brightness_map"]
+            "corner": post["logo_placement"]["best_corner"],
+            "brightness_map": post["logo_placement"]["brightness_map"],
         },
-        "dominant_colors": dominant_colors,
-        "image_url": f"http://localhost:8000/jobs/{session.id}/image",
-        "raw_url":   f"http://localhost:8000/jobs/{session.id}/raw"
+        "title_overlay": {
+            "headline": post["title_overlay"].get("headline"),
+            "subhead": post["title_overlay"].get("subhead"),
+            "type_mood": post["title_overlay"].get("type_mood"),
+            "anchor": post["title_overlay"].get("anchor"),
+        },
+        "dominant_colors": post["dominant_colors"],
+        "image_url": f"http://localhost:8000/api/v1/jobs/{session.id}/image",
+        "raw_url":   f"http://localhost:8000/api/v1/jobs/{session.id}/raw",
     }
 
 
@@ -543,6 +546,91 @@ def preview_flux_prompt(req: FluxPreviewRequest, db: Session = Depends(get_db)):
 
 
 # ============================================================
+# POST /preview-title
+# LLM title pack for the selected idea — cheap, no Flux call.
+# Persist on session so /generate-from-prompt can reuse it.
+# ============================================================
+
+@router.post("/preview-title")
+def preview_title(req: TitlePreviewRequest, db: Session = Depends(get_db)):
+    logger.info(
+        "POST /preview-title session=%s idea_number=%s",
+        req.session_id,
+        req.idea_number,
+    )
+    session = _get_session_or_404(req.session_id, db)
+    company = db.query(Company).filter(Company.id == session.company_id).first()
+    product = db.query(Product).filter(Product.id == session.selected_product_id).first()
+
+    if not product:
+        raise HTTPException(status_code=400, detail="No product selected. Run /select first.")
+
+    ideas = session.image_ideas or []
+    if req.idea_number is not None:
+        if req.idea_number < 1 or req.idea_number > len(ideas):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid idea number. Choose 1-{len(ideas)}.",
+            )
+        idea_index = req.idea_number - 1
+        session.selected_idea_index = idea_index
+    elif session.selected_idea_index is not None:
+        idea_index = session.selected_idea_index
+    elif ideas:
+        idea_index = 0
+        session.selected_idea_index = 0
+    else:
+        raise HTTPException(status_code=400, detail="No image ideas. Run /select first.")
+
+    idea_text = ideas[idea_index] if ideas else ""
+
+    # Manual override path (user-edited title)
+    if req.headline and req.headline.strip():
+        title_pack = {
+            "headline": req.headline.strip(),
+            "subhead": (req.subhead or "").strip(),
+            "type_mood": (req.type_mood or "minimal_clean").strip().lower(),
+        }
+    else:
+        company_dict = {
+            "name": company.name,
+            "brand_voice": company.brand_voice or [],
+            "social_media_profile": company.social_media_profile or {},
+            "primary_color": company.primary_color,
+        }
+        title_pack = generate_image_title(
+            company=company_dict,
+            theme=session.selected_theme or {},
+            product={"name": product.name, "description": product.description or ""},
+            idea=idea_text,
+        )
+        if req.subhead is not None:
+            title_pack["subhead"] = req.subhead.strip()
+        if req.type_mood:
+            title_pack["type_mood"] = req.type_mood.strip().lower()
+
+    # Store copy-only pack; placement is computed at composite time against the real image
+    session.title_overlay = {
+        **(session.title_overlay or {}),
+        "headline": title_pack["headline"],
+        "subhead": title_pack.get("subhead") or "",
+        "type_mood": title_pack.get("type_mood") or "minimal_clean",
+        "previewed": True,
+    }
+    db.commit()
+    logger.info("Title preview saved for session %s: %s", session.id, title_pack)
+
+    return {
+        "session_id": session.id,
+        "idea_number": idea_index + 1,
+        "selected_idea": idea_text,
+        "title": title_pack,
+        "ready_to_generate": True,
+        "next": "POST /generate-from-prompt (title is reused from session.title_overlay)",
+    }
+
+
+# ============================================================
 # POST /generate-from-prompt
 # user confirmed (or edited) the Flux prompt — now call Flux.
 # accepts the prompt string directly so user can tweak before submission.
@@ -595,37 +683,280 @@ async def generate_from_prompt(req: FluxGenerateRequest, db: Session = Depends(g
     db.commit()
     logger.info("Flux job %s completed. Raw image: %s", flux_job_id, raw_path)
 
-    # analyze for logo placement
-    placement = analyze_image_for_logo_placement(raw_path)
-    dominant_colors = extract_dominant_colors(raw_path)
+    # resolve idea text for title generation
+    ideas = session.image_ideas or []
+    idea_text = ""
+    if session.selected_idea_index is not None and 0 <= session.selected_idea_index < len(ideas):
+        idea_text = ideas[session.selected_idea_index]
+    elif ideas:
+        idea_text = ideas[0]
 
-    # composite logo if available
-    final_path = raw_path
-    if company.logo_local_path and Path(company.logo_local_path).exists():
-        logger.info("Compositing logo onto image...")
-        final_path = composite_logo(
-            base_image_path=raw_path,
-            logo_path=company.logo_local_path,
-            placement=placement,
-            session_id=session.id
-        )
-
-    session.final_image_path = final_path
-    session.logo_placement = placement
-    session.status = "done"
-    db.commit()
-    logger.info("Image processing complete for session %s. Status: done", session.id)
+    post = _postprocess_image(
+        session=session,
+        company=company,
+        product=product,
+        raw_path=raw_path,
+        idea=idea_text,
+        db=db,
+    )
 
     return {
         "session_id": session.id,
         "status": "done",
+        "selected_idea": idea_text,
         "flux_prompt_used": flux_prompt,
         "logo_placement": {
-            "corner": placement["best_corner"],
-            "brightness_map": placement["brightness_map"]
+            "corner": post["logo_placement"]["best_corner"],
+            "brightness_map": post["logo_placement"]["brightness_map"],
         },
-        "dominant_colors": dominant_colors,
+        "title_overlay": {
+            "headline": post["title_overlay"].get("headline"),
+            "subhead": post["title_overlay"].get("subhead"),
+            "type_mood": post["title_overlay"].get("type_mood"),
+            "anchor": post["title_overlay"].get("anchor"),
+        },
+        "dominant_colors": post["dominant_colors"],
         "image_url": f"http://localhost:8000/api/v1/jobs/{session.id}/image",
-        "raw_url":   f"http://localhost:8000/api/v1/jobs/{session.id}/raw"
+        "raw_url":   f"http://localhost:8000/api/v1/jobs/{session.id}/raw",
+    }
+
+
+def _postprocess_image(
+    session: CampaignSession,
+    company: Company,
+    product: Product,
+    raw_path: str,
+    idea: str,
+    db: Session,
+    title_override: dict | None = None,
+    force_new_title: bool = False,
+) -> dict:
+    """
+    Logo placement → logo composite → title composite (safe top band).
+    Updates session final_image_path, logo_placement, title_overlay, status.
+
+    title_override: optional {headline, subhead, type_mood} skips LLM / preview reuse.
+    force_new_title: ignore previewed title and call LLM again.
+    """
+    logger.debug("Post-processing image for session %s", session.id)
+
+    placement = analyze_image_for_logo_placement(raw_path)
+    dominant_colors = extract_dominant_colors(raw_path)
+
+    work_path = raw_path
+    if company.logo_local_path and Path(company.logo_local_path).exists():
+        logger.info("Compositing logo onto image...")
+        work_path = composite_logo(
+            base_image_path=raw_path,
+            logo_path=company.logo_local_path,
+            placement=placement,
+            session_id=session.id,
+        )
+    else:
+        logger.warning("No local logo; skipping logo composite")
+
+    company_dict = {
+        "name": company.name,
+        "brand_voice": company.brand_voice or [],
+        "social_media_profile": company.social_media_profile or {},
+        "primary_color": company.primary_color,
+    }
+    theme = session.selected_theme or {}
+    product_dict = {
+        "name": product.name,
+        "description": product.description or "",
+    }
+
+    title_pack = _resolve_title_pack(
+        session=session,
+        company_dict=company_dict,
+        theme=theme,
+        product_dict=product_dict,
+        idea=idea or "",
+        title_override=title_override,
+        force_new_title=force_new_title,
+    )
+
+    try:
+        final_path, title_placement = apply_title_overlay(
+            base_image_path=work_path,
+            headline=title_pack.get("headline") or "New Drop",
+            session_id=session.id,
+            subhead=title_pack.get("subhead") or "",
+            type_mood=title_pack.get("type_mood") or "minimal_clean",
+            logo_placement=placement,
+            primary_color=company.primary_color,
+            brand_voice=company.brand_voice or [],
+        )
+        title_overlay = {**title_pack, **title_placement, "previewed": False}
+    except Exception as e:
+        logger.error("Title composite failed: %s", e, exc_info=True)
+        final_path = work_path
+        title_overlay = {**title_pack, "error": str(e)}
+
+    session.final_image_path = final_path
+    session.logo_placement = placement
+    session.title_overlay = title_overlay
+    session.status = "done"
+    db.commit()
+    logger.info(
+        "Post-process done session=%s title=%r anchor=%s",
+        session.id,
+        title_overlay.get("headline"),
+        title_overlay.get("anchor"),
+    )
+
+    return {
+        "logo_placement": placement,
+        "title_overlay": title_overlay,
+        "dominant_colors": dominant_colors,
+        "final_path": final_path,
+    }
+
+
+def _resolve_title_pack(
+    session: CampaignSession,
+    company_dict: dict,
+    theme: dict,
+    product_dict: dict,
+    idea: str,
+    title_override: dict | None = None,
+    force_new_title: bool = False,
+) -> dict:
+    """Pick title copy: explicit override → previewed → LLM → theme fallback."""
+    if title_override and title_override.get("headline"):
+        pack = {
+            "headline": title_override["headline"].strip(),
+            "subhead": (title_override.get("subhead") or "").strip(),
+            "type_mood": (title_override.get("type_mood") or "minimal_clean").strip().lower(),
+        }
+        logger.info("Using title override: %s", pack)
+        return pack
+
+    existing = session.title_overlay or {}
+    if (
+        not force_new_title
+        and existing.get("previewed")
+        and existing.get("headline")
+    ):
+        pack = {
+            "headline": existing["headline"],
+            "subhead": existing.get("subhead") or "",
+            "type_mood": existing.get("type_mood") or "minimal_clean",
+        }
+        logger.info("Reusing previewed title: %s", pack)
+        return pack
+
+    # Prefer last composited headline when re-applying without override
+    if (
+        not force_new_title
+        and existing.get("headline")
+        and not existing.get("error")
+    ):
+        pack = {
+            "headline": existing.get("headline_source") or existing["headline"],
+            "subhead": existing.get("subhead") or "",
+            "type_mood": existing.get("type_mood") or "minimal_clean",
+        }
+        # If stored headline was uppercased for render, prefer source
+        logger.info("Reusing last session title: %s", pack)
+        return pack
+
+    pack = {
+        "headline": theme.get("theme_name") or product_dict.get("name") or "New Drop",
+        "subhead": product_dict.get("name") or "",
+        "type_mood": "minimal_clean",
+    }
+    try:
+        pack = generate_image_title(
+            company=company_dict,
+            theme=theme,
+            product=product_dict,
+            idea=idea or "",
+        )
+    except Exception as e:
+        logger.warning("Title LLM failed, using fallback: %s", e)
+    return pack
+
+
+# ============================================================
+# POST /apply-title
+# Re-run logo + title composite on an existing raw image (no Flux).
+# ============================================================
+
+@router.post("/apply-title")
+def apply_title(req: ApplyTitleRequest, db: Session = Depends(get_db)):
+    logger.info(
+        "POST /apply-title session=%s regenerate=%s headline=%r",
+        req.session_id,
+        req.regenerate_copy,
+        req.headline,
+    )
+    session = _get_session_or_404(req.session_id, db)
+    company = db.query(Company).filter(Company.id == session.company_id).first()
+    product = db.query(Product).filter(Product.id == session.selected_product_id).first()
+
+    if not product:
+        raise HTTPException(status_code=400, detail="No product selected. Run /select first.")
+
+    raw_path = session.raw_image_path
+    if not raw_path or not Path(raw_path).exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No raw image on this session. Run image generation first.",
+        )
+
+    ideas = session.image_ideas or []
+    idea_text = ""
+    if session.selected_idea_index is not None and 0 <= session.selected_idea_index < len(ideas):
+        idea_text = ideas[session.selected_idea_index]
+    elif ideas:
+        idea_text = ideas[0]
+
+    title_override = None
+    if req.headline and req.headline.strip():
+        title_override = {
+            "headline": req.headline.strip(),
+            "subhead": (req.subhead or "").strip(),
+            "type_mood": (req.type_mood or "minimal_clean").strip().lower(),
+        }
+    elif req.subhead is not None or req.type_mood:
+        # partial override on top of last/previewed title
+        base = session.title_overlay or {}
+        title_override = {
+            "headline": base.get("headline_source") or base.get("headline") or product.name,
+            "subhead": req.subhead if req.subhead is not None else (base.get("subhead") or ""),
+            "type_mood": (req.type_mood or base.get("type_mood") or "minimal_clean"),
+        }
+
+    post = _postprocess_image(
+        session=session,
+        company=company,
+        product=product,
+        raw_path=raw_path,
+        idea=idea_text,
+        db=db,
+        title_override=title_override,
+        force_new_title=req.regenerate_copy and not title_override,
+    )
+
+    return {
+        "session_id": session.id,
+        "status": "done",
+        "selected_idea": idea_text,
+        "logo_placement": {
+            "corner": post["logo_placement"]["best_corner"],
+            "brightness_map": post["logo_placement"]["brightness_map"],
+        },
+        "title_overlay": {
+            "headline": post["title_overlay"].get("headline"),
+            "subhead": post["title_overlay"].get("subhead"),
+            "type_mood": post["title_overlay"].get("type_mood"),
+            "anchor": post["title_overlay"].get("anchor"),
+        },
+        "dominant_colors": post["dominant_colors"],
+        "image_url": f"http://localhost:8000/api/v1/jobs/{session.id}/image",
+        "raw_url": f"http://localhost:8000/api/v1/jobs/{session.id}/raw",
+        "recomposited": True,
     }
 

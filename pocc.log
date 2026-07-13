@@ -111,3 +111,25 @@ half sandy b...
 [2026-07-04 23:06:30] [INFO] [ingest] Ingesting URL: https://spicenfood.com
 [2026-07-04 23:06:33] [INFO] [ingest] POST /ingest → 200 (3.3s)
 [2026-07-04 23:06:33] [INFO] [ingest] Already ingested: company_name=SPICEN slug=spicen
+[2026-07-13 06:24:35] [INFO] [campaign] Generating themes for company=spicen, topic=christmas season 
+[2026-07-13 06:25:13] [INFO] [campaign] POST /campaign → 200 (38.94s)
+[2026-07-13 06:25:13] [INFO] [campaign] Themes generated: session_id=e2077ae8-6472-4303-8cd0-5fc59bffb6e8, count=5
+[2026-07-13 06:25:14] [INFO] [campaign] Command completed in 39.03s
+[2026-07-13 06:26:44] [INFO] [select] Selecting theme 1 from session=e2077ae8-6472-4303-8cd0-5fc59bffb6e8
+[2026-07-13 06:26:54] [INFO] [select] POST /select → 200 (9.39s)
+[2026-07-13 06:26:54] [INFO] [select] Theme selected: theme_name=Midnight Holiday Fiesta, product=RASPBERRY BLOOD ORANGE PARTY FROST
+[2026-07-13 06:26:54] [INFO] [select] Image ideas generated: 3 ideas
+[2026-07-13 06:26:54] [INFO] [select] Command completed in 9.42s
+[2026-07-13 06:27:31] [INFO] [image] Generating image: session=e2077ae8-6472-4303-8cd0-5fc59bffb6e8, idea=1
+[2026-07-13 06:27:39] [INFO] [image] POST /preview-prompt → 200 (8.51s)
+[2026-07-13 06:29:04] [INFO] [image] User requested tweak: 'put some chrostmas motifs like christmas tree, sledge etc., get christmas vibe'
+[2026-07-13 06:29:13] [INFO] [image] POST /preview-prompt → 200 (8.91s)
+[2026-07-13 06:29:36] [INFO] [image] POST /preview-title → 200 (7.43s)
+[2026-07-13 06:29:47] [INFO] [image] Submitting confirmed prompt to Flux API...
+[2026-07-13 06:30:16] [INFO] [image] POST /generate-from-prompt → 200 (29.17s)
+[2026-07-13 06:30:16] [INFO] [image] Flux completed: flux_prompt_used=product, label, logo, geometry, scale unchanged
+dark wooden ...
+[2026-07-13 06:30:16] [INFO] [image] Logo placement analyzed: corner=bottom_left
+[2026-07-13 06:30:16] [INFO] [image] Title overlay: headline='FREEZE THE NIGHT BRIGHT' anchor=top_left
+[2026-07-13 06:30:16] [INFO] [image] Image generation complete: http://localhost:8000/api/v1/jobs/e2077ae8-6472-4303-8cd0-5fc59bffb6e8/image
+[2026-07-13 06:30:16] [INFO] [image] Command completed in 165.19s

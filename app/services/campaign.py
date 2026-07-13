@@ -41,7 +41,9 @@ Task: Generate exactly 3 background scene ideas for this product photo, each wit
 
 Composition rule for all 3:
 - Describe ONLY background/environment/lighting/props — NEVER the product itself.
-- Product occupies the left 60% of frame. Reserve right 30% as clean negative space for a logo.
+- Product occupies the left 60% of frame, mid-to-lower in the frame (not pressed against the top edge).
+- Reserve the upper ~15% of the frame as relatively open headroom (soft sky, wall, bokeh, or simple surface) for an on-image title — no tall props, hanging elements, or busy objects in that top band.
+- Reserve right 30% as clean negative space for a logo.
 - No object should overlap or compete with where the product sits.
 
 Intensity variation (this is the core instruction):
@@ -196,12 +198,12 @@ Secondary color: {secondary_color}
 Task: Write a Flux editing prompt using this exact structure, and nothing else:
 
 1. One line: what stays untouched (product, label, logo, geometry, scale — always the same wording, don't vary this).
-2. One line: what changes (background/environment only) — compress the scene idea into its visual essentials. Drop any word that isn't a physical, photographable detail (no "energetic," "premium," "festive" — describe light, surface, and the 1-2 real objects only).
+2. One line: what changes (background/environment only) — compress the scene idea into its visual essentials. Drop any word that isn't a physical, photographable detail (no "energetic," "premium," "festive" — describe light, surface, and the 1-2 real objects only). Keep the upper frame relatively open/simple (soft empty headroom near the top edge) and place the product mid-to-lower — physical framing only, not marketing language.
 3. One line: photographic realism directive — real phone/DSLR product photography, natural light behavior, authentic imperfections (soft shadow falloff, slight grain, true-to-life color), NOT airbrushed or synthetic-looking.
 
 Hard constraints:
 - Total output under 70 words.
-- No brand adjectives, no marketing language, no campaign names.
+- No brand adjectives, no marketing language, no campaign names, no text/typography instructions.
 - No more than 2 physical props mentioned total.
 - Every phrase must describe something a camera could literally capture.
 
@@ -226,6 +228,99 @@ Return ONLY valid JSON:
     flux_prompt = data["flux_prompt"]
     logger.debug("Generated Flux prompt (length=%d chars): %s", len(flux_prompt), flux_prompt)
     return flux_prompt
+
+
+def generate_image_title(
+    company: dict,
+    theme: dict,
+    product: dict,
+    idea: str,
+) -> dict:
+    """
+    Generate a short on-image Instagram-style title pack for the chosen idea.
+    Returns dict: headline, subhead (optional), type_mood.
+    """
+    logger.info(
+        "Generating image title for theme=%s product=%s",
+        theme.get("theme_name"),
+        product.get("name"),
+    )
+    brand_voice = ", ".join(company.get("brand_voice") or [])
+    social = company.get("social_media_profile") or {}
+    instagram_tone = social.get("instagram_tone", "")
+    cta_style = social.get("cta_style", "")
+
+    prompt = f"""You are an Instagram creative director writing ON-IMAGE titles for premium product photos (text that will be overlaid on the photo, not the caption under the post).
+
+Company: {company.get('name', '')}
+Brand voice: {brand_voice}
+Instagram tone: {instagram_tone}
+CTA style: {cta_style}
+Campaign theme: {theme.get('theme_name', '')}
+Concept: {theme.get('concept', '')}
+Mood: {theme.get('mood', '')}
+Product: {product.get('name', '')} — {product.get('description', '')}
+Scene idea: {idea}
+
+Write one title pack:
+- headline: 3–6 words max. Punchy Instagram hook that matches brand voice + mood. Not a full sentence. No hashtags, no emojis, no quotes.
+- subhead: optional one short line (product name or occasion). Empty string if not needed. Max ~6 words.
+- type_mood: exactly one of: minimal_clean | festive_bold | luxury_editorial | playful_soft | bold_street
+
+Rules:
+- No generic filler like "Premium Quality" or "Best Ever" unless the brand voice is literally that flat.
+- Headline should feel native to the campaign, not a product-spec label.
+- Prefer concrete, visual, or occasion-led language over corporate slogans.
+
+Return ONLY valid JSON:
+{{
+  "headline": "short hook",
+  "subhead": "optional or empty",
+  "type_mood": "minimal_clean"
+}}"""
+
+    import time
+    t0 = time.monotonic()
+    logger.debug("Calling OpenAI API for image title...")
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        max_tokens=250,
+        temperature=0.7,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    elapsed = time.monotonic() - t0
+    text = _extract_text(response)
+    logger.debug("Title LLM response in %.2fs: %s", elapsed, text)
+    data = _parse_json(text)
+
+    allowed_moods = {
+        "minimal_clean",
+        "festive_bold",
+        "luxury_editorial",
+        "playful_soft",
+        "bold_street",
+    }
+    type_mood = (data.get("type_mood") or "minimal_clean").strip().lower()
+    if type_mood not in allowed_moods:
+        type_mood = "minimal_clean"
+
+    headline = (data.get("headline") or theme.get("theme_name") or "New Drop").strip()
+    subhead = (data.get("subhead") or "").strip()
+
+    # hard clamps for overlay safety
+    headline_words = headline.split()
+    if len(headline_words) > 8:
+        headline = " ".join(headline_words[:6])
+    if len(subhead.split()) > 8:
+        subhead = " ".join(subhead.split()[:6])
+
+    result = {
+        "headline": headline,
+        "subhead": subhead,
+        "type_mood": type_mood,
+    }
+    logger.info("Image title generated: %s", result)
+    return result
 
 
 def select_best_product(products: list[dict], theme: dict) -> dict | None:

@@ -7,6 +7,7 @@ Usage:
   pocc campaign --company spicen --topic "your topic"
   pocc select --session <session_id> --theme <number>
   pocc image --session <session_id> --idea <number>
+  pocc retitle --session <session_id> [--headline ...] [--regenerate]
   pocc status --session <session_id>
   pocc list
 """
@@ -404,7 +405,7 @@ def image(session_id: str, idea_number: int):
     logger.info(f"Generating image: session={session_id}, idea={idea_number}")
 
     # ── Step 1: Preview the compressed Flux prompt ───────────────────────────
-    console.print(f"\n[bold]Step 1/2 — Building Flux prompt[/bold] for idea [cyan]{idea_number}[/cyan]…\n")
+    console.print(f"\n[bold]Step 1/3 — Building Flux prompt[/bold] for idea [cyan]{idea_number}[/cyan]…\n")
 
     user_tweak = None
     with console.status("[cyan]Compressing scene into a Flux prompt…[/cyan]"):
@@ -431,7 +432,7 @@ def image(session_id: str, idea_number: int):
 
     _show_prompt_panel(flux_prompt)
 
-    # ── Step 2: Optional edit loop ───────────────────────────────────────────
+    # ── Step 2: Optional Flux prompt edit loop ───────────────────────────────
     while True:
         edit = click.prompt(
             "\nEdit this prompt?",
@@ -465,8 +466,72 @@ def image(session_id: str, idea_number: int):
         flux_prompt = preview["flux_prompt"]
         _show_prompt_panel(flux_prompt, tweak=user_tweak)
 
+    # ── Step 2b: Preview on-image title ──────────────────────────────────────
+    console.print(f"\n[bold]Step 2/3 — Building on-image title[/bold]…\n")
+    with console.status("[cyan]Writing title copy…[/cyan]"):
+        title_preview = post(
+            "/preview-title",
+            {"session_id": session_id, "idea_number": idea_number},
+            logger=logger,
+        )
+
+    title = title_preview.get("title") or {}
+    headline = title.get("headline") or ""
+    subhead = title.get("subhead") or ""
+    type_mood = title.get("type_mood") or "minimal_clean"
+
+    def _show_title_panel(h: str, s: str, mood: str):
+        sub_line = f"\n[dim]Subhead:[/dim]  {s}" if s else ""
+        console.print(Panel(
+            f"[bold white]{h}[/bold white]{sub_line}\n\n"
+            f"[dim]Type mood:[/dim] [cyan]{mood}[/cyan]",
+            title="[bold magenta]Title Preview[/bold magenta]",
+            border_style="magenta",
+            padding=(1, 2),
+        ))
+
+    _show_title_panel(headline, subhead, type_mood)
+
+    while True:
+        edit_title = click.prompt(
+            "\nEdit this title?",
+            default="n",
+            show_default=True,
+            prompt_suffix=" (y/N) ",
+        ).strip().lower()
+
+        if edit_title != "y":
+            break
+
+        headline = click.prompt("  Headline (3–6 words)", default=headline).strip()
+        subhead = click.prompt("  Subhead (optional)", default=subhead or "").strip()
+        type_mood = click.prompt(
+            "  Type mood",
+            default=type_mood,
+            show_default=True,
+        ).strip() or type_mood
+
+        with console.status("[cyan]Saving title…[/cyan]"):
+            title_preview = post(
+                "/preview-title",
+                {
+                    "session_id": session_id,
+                    "idea_number": idea_number,
+                    "headline": headline,
+                    "subhead": subhead,
+                    "type_mood": type_mood,
+                },
+                logger=logger,
+            )
+        title = title_preview.get("title") or {}
+        headline = title.get("headline") or headline
+        subhead = title.get("subhead") or subhead
+        type_mood = title.get("type_mood") or type_mood
+        _show_title_panel(headline, subhead, type_mood)
+        logger.info(f"User-edited title: {headline!r} / {subhead!r} mood={type_mood}")
+
     # ── Step 3: Generate the image ───────────────────────────────────────────
-    console.print(f"\n[bold]Step 2/2 — Generating image[/bold] with Flux 2 Pro…\n")
+    console.print(f"\n[bold]Step 3/3 — Generating image[/bold] with Flux 2 Pro…\n")
     logger.info("Submitting confirmed prompt to Flux API...")
 
     with console.status("[cyan]Submitting to Flux…[/cyan]"):
@@ -499,29 +564,91 @@ def _log_and_print_image_result(
     result: dict, session_id: str, logger: logging.LoggerAdapter
 ):
     placement = result.get("logo_placement", {})
+    title = result.get("title_overlay") or {}
     colors = result.get("dominant_colors", [])
     image_url = result.get("image_url")
     corner = placement.get("corner", "N/A")
+    headline = title.get("headline") or "N/A"
+    subhead = title.get("subhead") or ""
+    anchor = title.get("anchor") or "N/A"
 
     logger.info(f"Logo placement analyzed: corner={corner}")
+    logger.info(f"Title overlay: headline={headline!r} anchor={anchor}")
 
     if result.get("status") == "done":
         logger.info(f"Image generation complete: {image_url}")
     else:
         logger.info(f"Image generation complete (no logo): {image_url}")
 
+    subhead_line = f"\nTitle subhead:  {subhead}" if subhead else ""
     console.print(Panel(
         f"[green]Image generated.[/green]\n\n"
         f"Idea used:     {result.get('selected_idea', '')}\n\n"
+        f"Title:         [bold]{headline}[/bold]{subhead_line}\n"
+        f"Title anchor:  [cyan]{anchor}[/cyan]\n"
         f"Logo placed:   [cyan]{corner}[/cyan]\n"
         f"Colors found:  {' '.join(colors[:5]) if colors else 'N/A'}\n\n"
         f"[bold]Final image:[/bold]\n[yellow]{image_url}[/yellow]\n\n"
-        f"[dim]Raw (no logo):[/dim]\n[dim]{result.get('raw_url')}[/dim]",
+        f"[dim]Raw (no logo/title):[/dim]\n[dim]{result.get('raw_url')}[/dim]",
         title="Done",
         box=box.ROUNDED
     ))
     console.print("\nOpen in browser or download:")
     console.print(f"  [bold cyan]{image_url}[/bold cyan]\n")
+
+
+# ============================================================
+# pocc retitle --session <id>
+# Re-composite logo + title on existing raw (no Flux).
+# ============================================================
+
+@cli.command()
+@click.option("--session", "session_id", required=True, help="Session ID with an existing raw image")
+@click.option("--headline", default=None, help="Override headline (skips LLM)")
+@click.option("--subhead", default=None, help="Override subhead")
+@click.option(
+    "--mood",
+    "type_mood",
+    default=None,
+    help="Type mood: minimal_clean | festive_bold | luxury_editorial | playful_soft | bold_street",
+)
+@click.option(
+    "--regenerate",
+    is_flag=True,
+    default=False,
+    help="Generate a new LLM title (ignored if --headline is set)",
+)
+def retitle(session_id: str, headline: str | None, subhead: str | None, type_mood: str | None, regenerate: bool):
+    """Re-apply logo + on-image title without re-running Flux"""
+    logger = get_logger("retitle")
+    t0 = time.monotonic()
+
+    logger.info(
+        f"Retitle: session={session_id} headline={headline!r} regenerate={regenerate}"
+    )
+    console.print(f"\n[bold]Re-compositing title[/bold] for session [cyan]{session_id}[/cyan]…\n")
+
+    body = {
+        "session_id": session_id,
+        "regenerate_copy": regenerate,
+    }
+    if headline is not None:
+        body["headline"] = headline
+    if subhead is not None:
+        body["subhead"] = subhead
+    if type_mood is not None:
+        body["type_mood"] = type_mood
+
+    with console.status("[cyan]Compositing logo + title…[/cyan]"):
+        result = post("/apply-title", body, logger=logger)
+
+    if result.get("status") == "done":
+        _log_and_print_image_result(result, session_id, logger)
+    else:
+        console.print(f"[red]Unexpected status:[/red] {result}")
+
+    elapsed = round(time.monotonic() - t0, 2)
+    logger.info(f"Command completed in {elapsed}s")
 
 
 # ============================================================
