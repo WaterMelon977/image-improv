@@ -133,3 +133,31 @@ dark wooden ...
 [2026-07-13 06:30:16] [INFO] [image] Title overlay: headline='FREEZE THE NIGHT BRIGHT' anchor=top_left
 [2026-07-13 06:30:16] [INFO] [image] Image generation complete: http://localhost:8000/api/v1/jobs/e2077ae8-6472-4303-8cd0-5fc59bffb6e8/image
 [2026-07-13 06:30:16] [INFO] [image] Command completed in 165.19s
+[2026-07-13 06:42:27] [INFO] [image] Generating image: session=e2077ae8-6472-4303-8cd0-5fc59bffb6e8, idea=1
+[2026-07-13 06:42:44] [INFO] [image] POST /preview-prompt → 200 (16.88s)
+[2026-07-13 06:43:27] [INFO] [image] User requested tweak: 'motifs of christmas, the tress ,sledge add them to bring in christmas vibes.'
+[2026-07-13 06:43:41] [INFO] [image] POST /preview-prompt → 200 (13.45s)
+[2026-07-13 06:43:55] [INFO] [image] POST /preview-title → 200 (8.42s)
+[2026-07-13 06:44:42] [INFO] [image] POST /preview-title → 200 (6.57s)
+[2026-07-13 06:44:42] [INFO] [image] User picked title #3: 'Crisp. Tart. Unforgettable.'
+[2026-07-13 06:44:42] [INFO] [image] Submitting confirmed prompt to Flux API...
+[2026-07-13 06:45:11] [INFO] [image] POST /generate-from-prompt → 200 (28.48s)
+[2026-07-13 06:45:11] [INFO] [image] Flux completed: flux_prompt_used=product, label, logo, geometry, scale untouched
+dark wooden ...
+[2026-07-13 06:45:11] [INFO] [image] Logo placement analyzed: corner=top_right
+[2026-07-13 06:45:11] [INFO] [image] Title overlay: headline='Crisp. Tart. Unforgettable.' anchor=top_left
+[2026-07-13 06:45:11] [INFO] [image] Image generation complete: http://localhost:8000/api/v1/jobs/e2077ae8-6472-4303-8cd0-5fc59bffb6e8/image
+[2026-07-13 06:45:11] [INFO] [image] Command completed in 163.83s
+[2026-07-13 06:56:46] [INFO] [image] Generating image: session=e2077ae8-6472-4303-8cd0-5fc59bffb6e8, idea=1
+[2026-07-13 06:57:01] [INFO] [image] POST /preview-prompt → 200 (15.35s)
+[2026-07-13 06:57:25] [INFO] [image] POST /preview-title → 200 (10.28s)
+[2026-07-13 06:58:04] [INFO] [image] POST /preview-title → 200 (6.55s)
+[2026-07-13 06:58:04] [INFO] [image] User custom title: 'FREEZE THE NIGHT' / 'RASPBERRY BLOOD ORANGE PARTY FROST' mood=festive_bold
+[2026-07-13 06:58:04] [INFO] [image] Submitting confirmed prompt to Flux API...
+[2026-07-13 06:58:34] [INFO] [image] POST /generate-from-prompt → 200 (29.95s)
+[2026-07-13 06:58:34] [INFO] [image] Flux completed: flux_prompt_used=product, label, logo, geometry, scale unchanged
+dark wooden ...
+[2026-07-13 06:58:34] [INFO] [image] Logo placement analyzed: corner=bottom_left
+[2026-07-13 06:58:34] [INFO] [image] Title overlay: headline='FREEZE THE NIGHT' anchor=top_left
+[2026-07-13 06:58:34] [INFO] [image] Image generation complete: http://localhost:8000/api/v1/jobs/e2077ae8-6472-4303-8cd0-5fc59bffb6e8/image
+[2026-07-13 06:58:34] [INFO] [image] Command completed in 108.6s

@@ -16,6 +16,7 @@ from app.services.campaign import (
     generate_themes, generate_image_ideas,
     build_flux_prompt, select_best_product,
     generate_image_title,
+    generate_image_titles,
 )
 from app.services.flux import generate_with_flux
 from app.services.image_processor import (
@@ -60,9 +61,15 @@ class FluxGenerateRequest(BaseModel):
 class TitlePreviewRequest(BaseModel):
     session_id: str
     idea_number: int | None = None  # defaults to session.selected_idea_index + 1
-    headline: str | None = None     # optional override (skip LLM if provided with subhead/mood)
+    # Generate 3 options (default) or select/override:
+    title_number: int | None = None  # 1-3 — pick from stored title_options
+    headline: str | None = None      # custom override (single title, skips LLM)
     subhead: str | None = None
     type_mood: str | None = None
+    type_system: str | None = None   # editorial_luxe | campaign_impact | modern_dtc
+    layout: str | None = None        # hero_headroom | magazine_stack
+    kicker: str | None = None
+    regenerate: bool = False         # force new batch of 3 options
 
 class ApplyTitleRequest(BaseModel):
     """Re-composite logo + title on an existing raw image (no Flux call)."""
@@ -70,7 +77,8 @@ class ApplyTitleRequest(BaseModel):
     headline: str | None = None
     subhead: str | None = None
     type_mood: str | None = None
-    regenerate_copy: bool = False  # force a new LLM title if no headline override
+    title_number: int | None = None  # pick from session title_options (1-3)
+    regenerate_copy: bool = False    # force a new LLM title if no headline override
 
 
 # -- helper --
@@ -553,10 +561,16 @@ def preview_flux_prompt(req: FluxPreviewRequest, db: Session = Depends(get_db)):
 
 @router.post("/preview-title")
 def preview_title(req: TitlePreviewRequest, db: Session = Depends(get_db)):
+    """
+    Generate 3 title options (default), or select one by title_number, or set a custom headline.
+    Selected pack is stored with previewed=true for generate/apply-title.
+    """
     logger.info(
-        "POST /preview-title session=%s idea_number=%s",
+        "POST /preview-title session=%s idea_number=%s title_number=%s regenerate=%s",
         req.session_id,
         req.idea_number,
+        req.title_number,
+        req.regenerate,
     )
     session = _get_session_or_404(req.session_id, db)
     company = db.query(Company).filter(Company.id == session.company_id).first()
@@ -583,14 +597,45 @@ def preview_title(req: TitlePreviewRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="No image ideas. Run /select first.")
 
     idea_text = ideas[idea_index] if ideas else ""
+    existing = session.title_overlay or {}
+    title_options = list(existing.get("title_options") or [])
 
-    # Manual override path (user-edited title)
+    # --- Path A: custom single title ---
     if req.headline and req.headline.strip():
         title_pack = {
+            "number": 0,
             "headline": req.headline.strip(),
             "subhead": (req.subhead or "").strip(),
             "type_mood": (req.type_mood or "minimal_clean").strip().lower(),
+            "type_system": (req.type_system or "modern_dtc").strip().lower(),
+            "layout": (req.layout or "hero_headroom").strip().lower(),
+            "kicker": (req.kicker or "").strip(),
         }
+        selected_number = 0
+        logger.info("Custom title override: %s", title_pack)
+
+    # --- Path B: pick existing option by number ---
+    elif req.title_number is not None and not req.regenerate:
+        if not title_options:
+            raise HTTPException(
+                status_code=400,
+                detail="No title options on session yet. Call /preview-title without title_number first.",
+            )
+        if req.title_number < 1 or req.title_number > len(title_options):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid title_number. Choose 1-{len(title_options)}.",
+            )
+        title_pack = dict(title_options[req.title_number - 1])
+        selected_number = req.title_number
+        # optional patch subhead/mood on selection
+        if req.subhead is not None:
+            title_pack["subhead"] = req.subhead.strip()
+        if req.type_mood:
+            title_pack["type_mood"] = req.type_mood.strip().lower()
+        logger.info("Selected title option %d: %s", selected_number, title_pack)
+
+    # --- Path C: generate (or regenerate) 3 options; default select #1 ---
     else:
         company_dict = {
             "name": company.name,
@@ -598,35 +643,65 @@ def preview_title(req: TitlePreviewRequest, db: Session = Depends(get_db)):
             "social_media_profile": company.social_media_profile or {},
             "primary_color": company.primary_color,
         }
-        title_pack = generate_image_title(
+        title_options = generate_image_titles(
             company=company_dict,
             theme=session.selected_theme or {},
             product={"name": product.name, "description": product.description or ""},
             idea=idea_text,
         )
-        if req.subhead is not None:
-            title_pack["subhead"] = req.subhead.strip()
-        if req.type_mood:
-            title_pack["type_mood"] = req.type_mood.strip().lower()
+        pick = req.title_number if req.title_number is not None else 1
+        if pick < 1 or pick > len(title_options):
+            pick = 1
+        title_pack = dict(title_options[pick - 1])
+        selected_number = pick
+        logger.info(
+            "Generated %d title options; default/selected #%d: %s",
+            len(title_options),
+            selected_number,
+            title_pack.get("headline"),
+        )
 
-    # Store copy-only pack; placement is computed at composite time against the real image
+    # Persist options + selected pack (placement filled at composite time)
     session.title_overlay = {
-        **(session.title_overlay or {}),
+        **existing,
+        "title_options": title_options,
+        "selected_title_number": selected_number,
         "headline": title_pack["headline"],
         "subhead": title_pack.get("subhead") or "",
         "type_mood": title_pack.get("type_mood") or "minimal_clean",
+        "type_system": title_pack.get("type_system") or "modern_dtc",
+        "layout": title_pack.get("layout") or "hero_headroom",
+        "kicker": title_pack.get("kicker") or "",
         "previewed": True,
     }
     db.commit()
-    logger.info("Title preview saved for session %s: %s", session.id, title_pack)
+    logger.info(
+        "Title preview saved session=%s selected=%s headline=%r system=%s layout=%s options=%d",
+        session.id,
+        selected_number,
+        title_pack.get("headline"),
+        title_pack.get("type_system"),
+        title_pack.get("layout"),
+        len(title_options),
+    )
 
     return {
         "session_id": session.id,
         "idea_number": idea_index + 1,
         "selected_idea": idea_text,
-        "title": title_pack,
+        "titles": title_options,
+        "selected_title_number": selected_number,
+        "title": {
+            "headline": title_pack["headline"],
+            "subhead": title_pack.get("subhead") or "",
+            "type_mood": title_pack.get("type_mood") or "minimal_clean",
+            "type_system": title_pack.get("type_system") or "modern_dtc",
+            "layout": title_pack.get("layout") or "hero_headroom",
+            "kicker": title_pack.get("kicker") or "",
+            "number": selected_number,
+        },
         "ready_to_generate": True,
-        "next": "POST /generate-from-prompt (title is reused from session.title_overlay)",
+        "next": "POST /preview-title with title_number to pick, or POST /generate-from-prompt",
     }
 
 
@@ -784,6 +859,9 @@ def _postprocess_image(
             session_id=session.id,
             subhead=title_pack.get("subhead") or "",
             type_mood=title_pack.get("type_mood") or "minimal_clean",
+            type_system=title_pack.get("type_system"),
+            layout=title_pack.get("layout"),
+            kicker=title_pack.get("kicker") or "",
             logo_placement=placement,
             primary_color=company.primary_color,
             brand_voice=company.brand_voice or [],
@@ -829,6 +907,9 @@ def _resolve_title_pack(
             "headline": title_override["headline"].strip(),
             "subhead": (title_override.get("subhead") or "").strip(),
             "type_mood": (title_override.get("type_mood") or "minimal_clean").strip().lower(),
+            "type_system": (title_override.get("type_system") or "modern_dtc"),
+            "layout": (title_override.get("layout") or "hero_headroom"),
+            "kicker": (title_override.get("kicker") or ""),
         }
         logger.info("Using title override: %s", pack)
         return pack
@@ -843,6 +924,9 @@ def _resolve_title_pack(
             "headline": existing["headline"],
             "subhead": existing.get("subhead") or "",
             "type_mood": existing.get("type_mood") or "minimal_clean",
+            "type_system": existing.get("type_system") or "modern_dtc",
+            "layout": existing.get("layout") or "hero_headroom",
+            "kicker": existing.get("kicker") or "",
         }
         logger.info("Reusing previewed title: %s", pack)
         return pack
@@ -857,8 +941,10 @@ def _resolve_title_pack(
             "headline": existing.get("headline_source") or existing["headline"],
             "subhead": existing.get("subhead") or "",
             "type_mood": existing.get("type_mood") or "minimal_clean",
+            "type_system": existing.get("type_system") or "modern_dtc",
+            "layout": existing.get("layout") or "hero_headroom",
+            "kicker": existing.get("kicker") or "",
         }
-        # If stored headline was uppercased for render, prefer source
         logger.info("Reusing last session title: %s", pack)
         return pack
 
@@ -866,14 +952,32 @@ def _resolve_title_pack(
         "headline": theme.get("theme_name") or product_dict.get("name") or "New Drop",
         "subhead": product_dict.get("name") or "",
         "type_mood": "minimal_clean",
+        "type_system": "modern_dtc",
+        "layout": "hero_headroom",
+        "kicker": "",
     }
     try:
-        pack = generate_image_title(
+        options = generate_image_titles(
             company=company_dict,
             theme=theme,
             product=product_dict,
             idea=idea or "",
         )
+        if options:
+            chosen = options[0]
+            pack = {
+                "headline": chosen["headline"],
+                "subhead": chosen.get("subhead") or "",
+                "type_mood": chosen.get("type_mood") or "minimal_clean",
+                "type_system": chosen.get("type_system") or "campaign_impact",
+                "layout": chosen.get("layout") or "hero_headroom",
+                "kicker": chosen.get("kicker") or "",
+            }
+            session.title_overlay = {
+                **existing,
+                "title_options": options,
+                "selected_title_number": 1,
+            }
     except Exception as e:
         logger.warning("Title LLM failed, using fallback: %s", e)
     return pack
@@ -920,8 +1024,40 @@ def apply_title(req: ApplyTitleRequest, db: Session = Depends(get_db)):
             "subhead": (req.subhead or "").strip(),
             "type_mood": (req.type_mood or "minimal_clean").strip().lower(),
         }
+    elif req.title_number is not None:
+        options = (session.title_overlay or {}).get("title_options") or []
+        if not options:
+            raise HTTPException(
+                status_code=400,
+                detail="No title_options on session. Run preview-title or retitle --regenerate first.",
+            )
+        if req.title_number < 1 or req.title_number > len(options):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid title_number. Choose 1-{len(options)}.",
+            )
+        picked = options[req.title_number - 1]
+        title_override = {
+            "headline": picked["headline"],
+            "subhead": picked.get("subhead") or "",
+            "type_mood": picked.get("type_mood") or "minimal_clean",
+            "type_system": picked.get("type_system") or "modern_dtc",
+            "layout": picked.get("layout") or "hero_headroom",
+            "kicker": picked.get("kicker") or "",
+        }
+        session.title_overlay = {
+            **(session.title_overlay or {}),
+            "selected_title_number": req.title_number,
+            "headline": title_override["headline"],
+            "subhead": title_override["subhead"],
+            "type_mood": title_override["type_mood"],
+            "type_system": title_override["type_system"],
+            "layout": title_override["layout"],
+            "kicker": title_override["kicker"],
+            "previewed": True,
+        }
+        db.commit()
     elif req.subhead is not None or req.type_mood:
-        # partial override on top of last/previewed title
         base = session.title_overlay or {}
         title_override = {
             "headline": base.get("headline_source") or base.get("headline") or product.name,

@@ -66,7 +66,7 @@ python cli/pocc.py image --session <session_id> --idea 1
 Interactive **3-step** flow:
 
 1. **Flux prompt** — preview; optional tweak (`y`/`n`)
-2. **On-image title** — headline / subhead / type mood; optional edit
+2. **On-image title** — **3 options** (hook / product / minimal); pick `1`–`3`, `(e)dit`, or `(r)egenerate`
 3. **Generate** — Flux 2 Pro → logo composite → title overlay → final PNG
 
 ### View images
@@ -82,8 +82,8 @@ Reuse the existing raw photo; re-place logo + title:
 
 ```bash
 python cli/pocc.py retitle --session <session_id> --headline "Poolside Happy Hour" --mood festive_bold
-python cli/pocc.py retitle --session <session_id> --subhead "Mango Margarita Frost" --mood luxury_editorial
-python cli/pocc.py retitle --session <session_id> --regenerate
+python cli/pocc.py retitle --session <session_id> --title 2
+python cli/pocc.py retitle --session <session_id> --regenerate   # 3 new options, then pick
 ```
 
 ### Other commands
@@ -100,7 +100,7 @@ python cli/pocc.py status --session <session_id>
 Titles are **not** drawn by Flux (unreliable text). Pipeline:
 
 ```
-LLM copy (headline + subhead + type_mood)
+LLM: 3 title options (hook / product / minimal) → user picks one
   → Flux scene (product preserved)
   → Pillow logo (corner brightness)
   → Pillow title in fixed top band
@@ -116,17 +116,20 @@ LLM copy (headline + subhead + type_mood)
 
 Candidates: `top_left` / `top_center` / `top_right`, scored by clutter + brightness. Soft scrim + auto light/dark text + brand-color underline.
 
-**Type moods → fonts** (`data/fonts/`)
+**Type systems** (letter DNA) + **layouts** (how type sits)
 
-| Mood | Font | Style |
-|------|------|--------|
-| `minimal_clean` | Open Sans Bold | Title case |
-| `festive_bold` | Montserrat Bold | UPPERCASE |
-| `luxury_editorial` | Playfair Display | Title case |
-| `playful_soft` | Open Sans Bold | Title case |
-| `bold_street` | Montserrat Bold | UPPERCASE |
+| System | Fonts | Feels like |
+|--------|-------|------------|
+| `campaign_impact` | Montserrat Black + Bold | Launch / Nike energy, often UPPERCASE |
+| `modern_dtc` | Outfit Bold + Regular | Clean DTC / Glossier-ish |
+| `editorial_luxe` | Cormorant Garamond + Montserrat Light | Magazine / Aesop-adjacent |
 
-Composition prompts also reserve upper headroom so Flux scenes leave room for type.
+| Layout | Treatment |
+|--------|-----------|
+| `hero_headroom` | Large type in top band + soft scrim + accent rule |
+| `magazine_stack` | Kicker → stacked display → hairline rule → subhead |
+
+Each of the **3 title options** carries its own `type_system` + `layout`. Short headlines auto-scale larger (billboard). Fonts live in `data/fonts/`.
 
 ---
 

@@ -230,18 +230,107 @@ Return ONLY valid JSON:
     return flux_prompt
 
 
-def generate_image_title(
+_ALLOWED_TYPE_MOODS = {
+    "minimal_clean",
+    "festive_bold",
+    "luxury_editorial",
+    "playful_soft",
+    "bold_street",
+}
+_ALLOWED_TYPE_SYSTEMS = {
+    "editorial_luxe",
+    "campaign_impact",
+    "modern_dtc",
+}
+_ALLOWED_LAYOUTS = {
+    "hero_headroom",
+    "magazine_stack",
+}
+
+# Default look per option slot when LLM omits system/layout
+_OPTION_LOOK_DEFAULTS = {
+    1: {  # HOOK
+        "type_mood": "festive_bold",
+        "type_system": "campaign_impact",
+        "layout": "hero_headroom",
+        "kicker": "",
+    },
+    2: {  # PRODUCT
+        "type_mood": "minimal_clean",
+        "type_system": "modern_dtc",
+        "layout": "hero_headroom",
+        "kicker": "",
+    },
+    3: {  # MINIMAL / editorial
+        "type_mood": "luxury_editorial",
+        "type_system": "editorial_luxe",
+        "layout": "magazine_stack",
+        "kicker": "FEATURED",
+    },
+}
+
+
+def _normalize_title_pack(data: dict, theme: dict, fallback_number: int = 1) -> dict:
+    """Clamp and sanitize a single title pack from LLM or user input."""
+    number = data.get("number", fallback_number)
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        number = fallback_number
+    number = max(1, min(3, number))
+
+    defaults = _OPTION_LOOK_DEFAULTS.get(number, _OPTION_LOOK_DEFAULTS[1])
+
+    type_mood = (data.get("type_mood") or defaults["type_mood"]).strip().lower()
+    if type_mood not in _ALLOWED_TYPE_MOODS:
+        type_mood = defaults["type_mood"]
+
+    type_system = (data.get("type_system") or defaults["type_system"]).strip().lower()
+    if type_system not in _ALLOWED_TYPE_SYSTEMS:
+        type_system = defaults["type_system"]
+
+    layout = (data.get("layout") or defaults["layout"]).strip().lower()
+    if layout not in _ALLOWED_LAYOUTS:
+        layout = defaults["layout"]
+
+    kicker = (data.get("kicker") or defaults.get("kicker") or "").strip()
+    if layout == "magazine_stack" and not kicker:
+        kicker = "CAMPAIGN"
+    if layout != "magazine_stack":
+        kicker = kicker  # optional micro-label still allowed but usually empty
+
+    headline = (data.get("headline") or theme.get("theme_name") or "New Drop").strip()
+    subhead = (data.get("subhead") or "").strip()
+
+    headline_words = headline.split()
+    if len(headline_words) > 8:
+        headline = " ".join(headline_words[:6])
+    if len(subhead.split()) > 8:
+        subhead = " ".join(subhead.split()[:6])
+
+    return {
+        "number": number,
+        "headline": headline,
+        "subhead": subhead,
+        "type_mood": type_mood,
+        "type_system": type_system,
+        "layout": layout,
+        "kicker": kicker,
+    }
+
+
+def generate_image_titles(
     company: dict,
     theme: dict,
     product: dict,
     idea: str,
-) -> dict:
+) -> list[dict]:
     """
-    Generate a short on-image Instagram-style title pack for the chosen idea.
-    Returns dict: headline, subhead (optional), type_mood.
+    Generate 3 distinct on-image Instagram-style title packs.
+    Each: { number, headline, subhead, type_mood }.
     """
     logger.info(
-        "Generating image title for theme=%s product=%s",
+        "Generating 3 image titles for theme=%s product=%s",
         theme.get("theme_name"),
         product.get("name"),
     )
@@ -249,78 +338,144 @@ def generate_image_title(
     social = company.get("social_media_profile") or {}
     instagram_tone = social.get("instagram_tone", "")
     cta_style = social.get("cta_style", "")
+    theme_name = theme.get("theme_name") or "Campaign"
+    product_name = product.get("name") or "Product"
 
-    prompt = f"""You are an Instagram creative director writing ON-IMAGE titles for premium product photos (text that will be overlaid on the photo, not the caption under the post).
+    prompt = f"""You are an Instagram creative director writing ON-IMAGE titles for premium product photos (text overlaid on the photo, not the feed caption under the post).
 
 Company: {company.get('name', '')}
 Brand voice: {brand_voice}
 Instagram tone: {instagram_tone}
 CTA style: {cta_style}
-Campaign theme: {theme.get('theme_name', '')}
+Campaign theme: {theme_name}
 Concept: {theme.get('concept', '')}
 Mood: {theme.get('mood', '')}
-Product: {product.get('name', '')} — {product.get('description', '')}
+Product: {product_name} — {product.get('description', '')}
 Scene idea: {idea}
 
-Write one title pack:
-- headline: 3–6 words max. Punchy Instagram hook that matches brand voice + mood. Not a full sentence. No hashtags, no emojis, no quotes.
-- subhead: optional one short line (product name or occasion). Empty string if not needed. Max ~6 words.
-- type_mood: exactly one of: minimal_clean | festive_bold | luxury_editorial | playful_soft | bold_street
+Task: Write exactly 3 DISTINCT title packs the user can choose from. Each pack includes copy AND a premium look (type system + layout) like real brand Instagram posts.
+
+1. HOOK — bold campaign/occasion energy (Instagram ad heat)
+   Prefer: type_system=campaign_impact, layout=hero_headroom, short powerful headline (2–5 words)
+2. PRODUCT — product/benefit-forward DTC polish
+   Prefer: type_system=modern_dtc, layout=hero_headroom
+3. EDITORIAL — quiet luxury / magazine (fewest words, most premium)
+   Prefer: type_system=editorial_luxe, layout=magazine_stack, include a short kicker (1–2 words, e.g. SEASON, LIMITED, NEW)
+
+For each pack:
+- headline: 2–6 words max. Punchy. Not a full sentence. No hashtags, no emojis, no quotes.
+- subhead: optional short line (product name or occasion). Empty string if not needed. Max ~6 words.
+- kicker: optional micro-label above headline (mostly for magazine_stack). Uppercase words, max 2. Empty string if unused.
+- type_mood: minimal_clean | festive_bold | luxury_editorial | playful_soft | bold_street
+- type_system: exactly one of: editorial_luxe | campaign_impact | modern_dtc
+- layout: exactly one of: hero_headroom | magazine_stack
 
 Rules:
-- No generic filler like "Premium Quality" or "Best Ever" unless the brand voice is literally that flat.
-- Headline should feel native to the campaign, not a product-spec label.
-- Prefer concrete, visual, or occasion-led language over corporate slogans.
+- All 3 headlines must be different (not paraphrases).
+- No generic filler like "Premium Quality" or "Best Ever" unless brand voice is that flat.
+- Prefer concrete, visual, or occasion-led language.
+- Match look to energy: option 1 impact, option 2 clean DTC, option 3 editorial luxe.
 
 Return ONLY valid JSON:
 {{
-  "headline": "short hook",
-  "subhead": "optional or empty",
-  "type_mood": "minimal_clean"
+  "titles": [
+    {{
+      "number": 1,
+      "headline": "...",
+      "subhead": "...",
+      "kicker": "",
+      "type_mood": "festive_bold",
+      "type_system": "campaign_impact",
+      "layout": "hero_headroom"
+    }},
+    {{
+      "number": 2,
+      "headline": "...",
+      "subhead": "...",
+      "kicker": "",
+      "type_mood": "minimal_clean",
+      "type_system": "modern_dtc",
+      "layout": "hero_headroom"
+    }},
+    {{
+      "number": 3,
+      "headline": "...",
+      "subhead": "...",
+      "kicker": "LIMITED",
+      "type_mood": "luxury_editorial",
+      "type_system": "editorial_luxe",
+      "layout": "magazine_stack"
+    }}
+  ]
 }}"""
 
     import time
     t0 = time.monotonic()
-    logger.debug("Calling OpenAI API for image title...")
+    logger.debug("Calling OpenAI API for 3 image titles...")
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
-        max_tokens=250,
-        temperature=0.7,
+        max_tokens=500,
+        temperature=0.8,
         messages=[{"role": "user", "content": prompt}],
     )
     elapsed = time.monotonic() - t0
     text = _extract_text(response)
-    logger.debug("Title LLM response in %.2fs: %s", elapsed, text)
+    logger.debug("Titles LLM response in %.2fs: %s", elapsed, text)
     data = _parse_json(text)
 
-    allowed_moods = {
-        "minimal_clean",
-        "festive_bold",
-        "luxury_editorial",
-        "playful_soft",
-        "bold_street",
+    raw_titles = data.get("titles") or data.get("options") or []
+    if not isinstance(raw_titles, list):
+        raw_titles = []
+
+    titles: list[dict] = []
+    for i, item in enumerate(raw_titles[:3]):
+        if not isinstance(item, dict):
+            continue
+        titles.append(_normalize_title_pack(item, theme, fallback_number=i + 1))
+
+    # Ensure exactly 3 options with sensible fallbacks
+    while len(titles) < 3:
+        n = len(titles) + 1
+        d = _OPTION_LOOK_DEFAULTS[n]
+        if n == 1:
+            pack = {"headline": theme_name, "subhead": product_name, **d}
+        elif n == 2:
+            pack = {"headline": product_name, "subhead": theme_name, **d}
+        else:
+            pack = {"headline": "Just Dropped", "subhead": product_name, **d}
+        titles.append(_normalize_title_pack(pack, theme, n))
+
+    for i, t in enumerate(titles):
+        t["number"] = i + 1
+
+    logger.info(
+        "Generated %d title options: %s",
+        len(titles),
+        [(t["headline"], t.get("type_system"), t.get("layout")) for t in titles],
+    )
+    return titles
+
+
+def generate_image_title(
+    company: dict,
+    theme: dict,
+    product: dict,
+    idea: str,
+) -> dict:
+    """
+    Generate a single title pack (first of three options).
+    Prefer generate_image_titles() when the user should pick.
+    """
+    titles = generate_image_titles(company, theme, product, idea)
+    chosen = titles[0]
+    return {
+        "headline": chosen["headline"],
+        "subhead": chosen.get("subhead") or "",
+        "type_mood": chosen.get("type_mood") or "minimal_clean",
+        "type_system": chosen.get("type_system") or "campaign_impact",
+        "layout": chosen.get("layout") or "hero_headroom",
+        "kicker": chosen.get("kicker") or "",
     }
-    type_mood = (data.get("type_mood") or "minimal_clean").strip().lower()
-    if type_mood not in allowed_moods:
-        type_mood = "minimal_clean"
-
-    headline = (data.get("headline") or theme.get("theme_name") or "New Drop").strip()
-    subhead = (data.get("subhead") or "").strip()
-
-    # hard clamps for overlay safety
-    headline_words = headline.split()
-    if len(headline_words) > 8:
-        headline = " ".join(headline_words[:6])
-    if len(subhead.split()) > 8:
-        subhead = " ".join(subhead.split()[:6])
-
-    result = {
-        "headline": headline,
-        "subhead": subhead,
-        "type_mood": type_mood,
-    }
-    logger.info("Image title generated: %s", result)
-    return result
 
 
 def select_best_product(products: list[dict], theme: dict) -> dict | None:

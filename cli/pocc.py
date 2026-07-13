@@ -466,69 +466,166 @@ def image(session_id: str, idea_number: int):
         flux_prompt = preview["flux_prompt"]
         _show_prompt_panel(flux_prompt, tweak=user_tweak)
 
-    # ── Step 2b: Preview on-image title ──────────────────────────────────────
-    console.print(f"\n[bold]Step 2/3 — Building on-image title[/bold]…\n")
-    with console.status("[cyan]Writing title copy…[/cyan]"):
+    # ── Step 2b: Preview 3 on-image titles, pick one ─────────────────────────
+    console.print(f"\n[bold]Step 2/3 — Pick an on-image title[/bold]…\n")
+    with console.status("[cyan]Writing 3 title options…[/cyan]"):
         title_preview = post(
             "/preview-title",
             {"session_id": session_id, "idea_number": idea_number},
             logger=logger,
         )
 
+    titles = title_preview.get("titles") or []
     title = title_preview.get("title") or {}
     headline = title.get("headline") or ""
     subhead = title.get("subhead") or ""
     type_mood = title.get("type_mood") or "minimal_clean"
+    selected_n = title_preview.get("selected_title_number") or 1
+
+    def _show_title_options(options: list, selected: int):
+        table = Table(
+            title="Title options",
+            box=box.ROUNDED,
+            show_header=True,
+            header_style="bold magenta",
+        )
+        table.add_column("#", style="cyan", justify="right", width=3)
+        table.add_column("Headline", style="bold white")
+        table.add_column("Subhead", style="dim")
+        table.add_column("System", style="magenta")
+        table.add_column("Layout", style="cyan")
+        for t in options:
+            n = t.get("number", 0)
+            mark = f"[green]{n}[/green]" if n == selected else str(n)
+            table.add_row(
+                mark,
+                t.get("headline") or "",
+                t.get("subhead") or "—",
+                t.get("type_system") or "—",
+                t.get("layout") or "—",
+            )
+        console.print(table)
+        tsel = next((t for t in options if t.get("number") == selected), {}) or {}
+        console.print(
+            f"\n[dim]Selected:[/dim] [bold]{headline}[/bold]"
+            + (f"  [dim]/[/dim] {subhead}" if subhead else "")
+            + f"  [magenta]{tsel.get('type_system') or type_mood}[/magenta]"
+            + f"  [cyan]{tsel.get('layout') or ''}[/cyan]"
+        )
 
     def _show_title_panel(h: str, s: str, mood: str):
         sub_line = f"\n[dim]Subhead:[/dim]  {s}" if s else ""
         console.print(Panel(
             f"[bold white]{h}[/bold white]{sub_line}\n\n"
             f"[dim]Type mood:[/dim] [cyan]{mood}[/cyan]",
-            title="[bold magenta]Title Preview[/bold magenta]",
+            title="[bold magenta]Selected title[/bold magenta]",
             border_style="magenta",
             padding=(1, 2),
         ))
 
-    _show_title_panel(headline, subhead, type_mood)
+    if titles:
+        _show_title_options(titles, selected_n)
+    else:
+        _show_title_panel(headline, subhead, type_mood)
 
     while True:
-        edit_title = click.prompt(
-            "\nEdit this title?",
-            default="n",
+        choice = click.prompt(
+            "\nPick title 1-3, (e)dit custom, (r)egenerate options, or (n) keep selected",
+            default=str(selected_n),
             show_default=True,
-            prompt_suffix=" (y/N) ",
+            prompt_suffix=" › ",
         ).strip().lower()
 
-        if edit_title != "y":
+        if choice in ("n", "keep"):
+            # re-confirm selected on server (custom selected_n=0 already saved)
+            if selected_n and selected_n >= 1:
+                with console.status("[cyan]Saving selection…[/cyan]"):
+                    title_preview = post(
+                        "/preview-title",
+                        {
+                            "session_id": session_id,
+                            "idea_number": idea_number,
+                            "title_number": selected_n,
+                        },
+                        logger=logger,
+                    )
+                title = title_preview.get("title") or title
+                headline = title.get("headline") or headline
             break
 
-        headline = click.prompt("  Headline (3–6 words)", default=headline).strip()
-        subhead = click.prompt("  Subhead (optional)", default=subhead or "").strip()
-        type_mood = click.prompt(
-            "  Type mood",
-            default=type_mood,
-            show_default=True,
-        ).strip() or type_mood
+        if choice in ("r", "regen", "regenerate"):
+            with console.status("[cyan]Regenerating 3 titles…[/cyan]"):
+                title_preview = post(
+                    "/preview-title",
+                    {
+                        "session_id": session_id,
+                        "idea_number": idea_number,
+                        "regenerate": True,
+                    },
+                    logger=logger,
+                )
+            titles = title_preview.get("titles") or titles
+            title = title_preview.get("title") or {}
+            headline = title.get("headline") or ""
+            subhead = title.get("subhead") or ""
+            type_mood = title.get("type_mood") or "minimal_clean"
+            selected_n = title_preview.get("selected_title_number") or 1
+            _show_title_options(titles, selected_n)
+            continue
 
-        with console.status("[cyan]Saving title…[/cyan]"):
-            title_preview = post(
-                "/preview-title",
-                {
-                    "session_id": session_id,
-                    "idea_number": idea_number,
-                    "headline": headline,
-                    "subhead": subhead,
-                    "type_mood": type_mood,
-                },
-                logger=logger,
-            )
-        title = title_preview.get("title") or {}
-        headline = title.get("headline") or headline
-        subhead = title.get("subhead") or subhead
-        type_mood = title.get("type_mood") or type_mood
-        _show_title_panel(headline, subhead, type_mood)
-        logger.info(f"User-edited title: {headline!r} / {subhead!r} mood={type_mood}")
+        if choice in ("e", "edit", "y"):
+            headline = click.prompt("  Headline (3–6 words)", default=headline).strip()
+            subhead = click.prompt("  Subhead (optional)", default=subhead or "").strip()
+            type_mood = click.prompt(
+                "  Type mood",
+                default=type_mood,
+                show_default=True,
+            ).strip() or type_mood
+
+            with console.status("[cyan]Saving custom title…[/cyan]"):
+                title_preview = post(
+                    "/preview-title",
+                    {
+                        "session_id": session_id,
+                        "idea_number": idea_number,
+                        "headline": headline,
+                        "subhead": subhead,
+                        "type_mood": type_mood,
+                    },
+                    logger=logger,
+                )
+            title = title_preview.get("title") or {}
+            headline = title.get("headline") or headline
+            subhead = title.get("subhead") or subhead
+            type_mood = title.get("type_mood") or type_mood
+            selected_n = 0
+            _show_title_panel(headline, subhead, type_mood)
+            logger.info(f"User custom title: {headline!r} / {subhead!r} mood={type_mood}")
+            break
+
+        if choice in ("1", "2", "3"):
+            pick = int(choice)
+            with console.status(f"[cyan]Selecting title {pick}…[/cyan]"):
+                title_preview = post(
+                    "/preview-title",
+                    {
+                        "session_id": session_id,
+                        "idea_number": idea_number,
+                        "title_number": pick,
+                    },
+                    logger=logger,
+                )
+            titles = title_preview.get("titles") or titles
+            title = title_preview.get("title") or {}
+            headline = title.get("headline") or ""
+            subhead = title.get("subhead") or ""
+            type_mood = title.get("type_mood") or "minimal_clean"
+            selected_n = title_preview.get("selected_title_number") or pick
+            _show_title_panel(headline, subhead, type_mood)
+            logger.info(f"User picked title #{selected_n}: {headline!r}")
+            break
+
+        console.print("[yellow]Enter 1, 2, 3, e, r, or n.[/yellow]")
 
     # ── Step 3: Generate the image ───────────────────────────────────────────
     console.print(f"\n[bold]Step 3/3 — Generating image[/bold] with Flux 2 Pro…\n")
@@ -613,20 +710,69 @@ def _log_and_print_image_result(
     help="Type mood: minimal_clean | festive_bold | luxury_editorial | playful_soft | bold_street",
 )
 @click.option(
+    "--title",
+    "title_number",
+    default=None,
+    type=int,
+    help="Pick stored title option 1-3 (from last preview)",
+)
+@click.option(
     "--regenerate",
     is_flag=True,
     default=False,
-    help="Generate a new LLM title (ignored if --headline is set)",
+    help="Generate 3 new title options and pick interactively (ignored if --headline is set)",
 )
-def retitle(session_id: str, headline: str | None, subhead: str | None, type_mood: str | None, regenerate: bool):
+def retitle(
+    session_id: str,
+    headline: str | None,
+    subhead: str | None,
+    type_mood: str | None,
+    title_number: int | None,
+    regenerate: bool,
+):
     """Re-apply logo + on-image title without re-running Flux"""
     logger = get_logger("retitle")
     t0 = time.monotonic()
 
     logger.info(
-        f"Retitle: session={session_id} headline={headline!r} regenerate={regenerate}"
+        f"Retitle: session={session_id} headline={headline!r} "
+        f"title_number={title_number} regenerate={regenerate}"
     )
     console.print(f"\n[bold]Re-compositing title[/bold] for session [cyan]{session_id}[/cyan]…\n")
+
+    # Interactive: generate 3 options and pick
+    if regenerate and not headline:
+        with console.status("[cyan]Writing 3 title options…[/cyan]"):
+            preview = post(
+                "/preview-title",
+                {"session_id": session_id, "regenerate": True},
+                logger=logger,
+            )
+        options = preview.get("titles") or []
+        table = Table(title="Title options", box=box.ROUNDED)
+        table.add_column("#", style="cyan", justify="right")
+        table.add_column("Headline", style="bold")
+        table.add_column("Subhead", style="dim")
+        table.add_column("System", style="magenta")
+        table.add_column("Layout", style="cyan")
+        for t in options:
+            table.add_row(
+                str(t.get("number", "")),
+                t.get("headline") or "",
+                t.get("subhead") or "—",
+                t.get("type_system") or "—",
+                t.get("layout") or "—",
+            )
+        console.print(table)
+        pick = click.prompt("Pick title", type=click.IntRange(1, max(1, len(options) or 1)), default=1)
+        with console.status("[cyan]Saving selection…[/cyan]"):
+            post(
+                "/preview-title",
+                {"session_id": session_id, "title_number": pick},
+                logger=logger,
+            )
+        title_number = pick
+        regenerate = False
 
     body = {
         "session_id": session_id,
@@ -638,6 +784,8 @@ def retitle(session_id: str, headline: str | None, subhead: str | None, type_moo
         body["subhead"] = subhead
     if type_mood is not None:
         body["type_mood"] = type_mood
+    if title_number is not None:
+        body["title_number"] = title_number
 
     with console.status("[cyan]Compositing logo + title…[/cyan]"):
         result = post("/apply-title", body, logger=logger)

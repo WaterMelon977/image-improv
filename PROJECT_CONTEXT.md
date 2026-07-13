@@ -18,7 +18,7 @@ POCC is an end-to-end AI product image generation platform. Given a company webs
 5. **Generates** 5 campaign themes for any user-given topic
 6. **Generates** 3 image ideas per theme (with top headroom for titles)
 7. **Builds and previews** a compressed, surgical Flux editing prompt (LLM-based)
-8. **Previews** an on-image title pack (headline / subhead / type_mood) — optional edit
+8. **Previews 3 on-image title options** (hook / product / minimal) — user picks one (or custom edit)
 9. **Calls Flux 2 Pro** to edit the product image (img2img, preserving product)
 10. **Analyzes** the generated image for optimal logo placement
 11. **Composites** the logo using Pillow (no AI)
@@ -188,20 +188,44 @@ Request: `{ session_id, idea_number, user_tweak? }`
 Persists `flux_prompt` + `selected_idea_index` on session.
 
 ### POST /preview-title
-On-image title pack for review (no Flux call).  
-Request:
+On-image title options for review (no Flux call).
+
+**Default:** generates **3 distinct titles** and selects #1.
 
 ```json
 {
   "session_id": "uuid",
   "idea_number": 3,
-  "headline": "optional override",
-  "subhead": "optional",
-  "type_mood": "festive_bold"
+  "title_number": null,
+  "regenerate": false,
+  "headline": null,
+  "subhead": null,
+  "type_mood": null
 }
 ```
 
-Persists on `session.title_overlay` with `previewed: true` so generate reuses copy.
+| Field | Behavior |
+|-------|----------|
+| (none) | Generate 3 options; select #1 |
+| `title_number` 1–3 | Pick stored option (no new LLM call) |
+| `regenerate: true` | Fresh batch of 3 |
+| `headline` | Custom single title |
+
+**Response:**
+
+```json
+{
+  "titles": [
+    {"number": 1, "headline": "...", "subhead": "...", "type_mood": "festive_bold"},
+    {"number": 2, "headline": "...", "subhead": "...", "type_mood": "minimal_clean"},
+    {"number": 3, "headline": "...", "subhead": "...", "type_mood": "luxury_editorial"}
+  ],
+  "selected_title_number": 1,
+  "title": { "headline": "...", "subhead": "...", "type_mood": "...", "number": 1 }
+}
+```
+
+Persists `title_options` + selected pack on `session.title_overlay` with `previewed: true`.
 
 ### POST /generate-from-prompt
 Confirmed Flux prompt → Flux → logo → title → final.
@@ -281,7 +305,7 @@ List ingested companies.
 1. `generate_themes` — 5 themes (name, concept, angle, product, mood, ambience)  
 2. `generate_image_ideas` — 3 intensity variants; **product left ~60%, mid-lower; upper ~15% open headroom for title; right for logo**  
 3. `build_flux_prompt` — surgical 3-line edit prompt (&lt;70 words); physical open upper frame; **no marketing language, no typography instructions**  
-4. `generate_image_title` — LLM returns `{ headline, subhead, type_mood }` from brand voice, theme, product, idea, social profile  
+4. `generate_image_titles` — LLM returns **3** packs `{ number, headline, subhead, type_mood }` (hook / product / minimal angles); `generate_image_title` returns the first for non-interactive paths  
 5. `select_best_product` — exact → fuzzy → substring → first with master image  
 
 ### flux.py
@@ -296,33 +320,32 @@ List ingested companies.
 1. `analyze_image_for_logo_placement` — 4-corner brightness; darkest-logo → brightest corner  
 2. `composite_logo` — resize ~20% width, drop shadow, paste RGBA  
 
-**Title overlay (Instagram-style on-image headline)**
+**Title overlay (premium Instagram-style)**
 
-Layout contract (fractions of image size):
+**Type systems** (`TYPE_SYSTEMS`):
 
-| Constant | Value | Role |
-|----------|-------|------|
-| `TITLE_BAND_FRAC` | 0.15 | Top band for title only |
-| `PRODUCT_RECT_FRAC` | (0.05, 0.18, 0.55, 0.92) | Forbid text over product |
-| Edge padding | ~3% | Keep type off edges |
+| ID | Display | Support | Notes |
+|----|---------|---------|-------|
+| `campaign_impact` | Montserrat Black | Montserrat Bold | UPPERCASE, tight tracking, thick accent bar |
+| `modern_dtc` | Outfit Bold | Outfit Regular | Clean geometric DTC |
+| `editorial_luxe` | Cormorant Garamond Bold | Montserrat Light | Open tracking, hairline rule, magazine kicker |
 
-Pipeline:
+**Layouts:**
 
-1. `resolve_type_mood` — normalize mood; fallback from `brand_voice` keywords  
-2. `_resolve_font_files` + `_mood_recipe` — font file + size scale + uppercase  
-3. `plan_title_placement` — measure text bbox; candidates top_left/center/right; reject product/logo intersections; score clutter + brightness; deprioritize same side as logo; fallback shrink → drop subhead → force safe slot  
-4. `composite_title` — soft top scrim, text + shadow, brand-color accent underline  
-5. `apply_title_overlay` — plan + composite in one call  
+| ID | Band | Stack |
+|----|------|-------|
+| `hero_headroom` | ~18% | Large headline + subhead + accent rule + soft scrim |
+| `magazine_stack` | ~24% | Kicker → 1–2 line display → hairline → subhead |
 
-**Type mood → font**
+**Safety:** product forbid rect; logo rect; candidates L/C/R; clutter scoring. Short headlines get a size boost (billboard).
 
-| type_mood | Display font | Casing |
-|-----------|--------------|--------|
-| `minimal_clean` | OpenSans-Bold | Title case |
-| `festive_bold` | Montserrat-Bold | UPPERCASE |
-| `luxury_editorial` | PlayfairDisplay (fallback Montserrat) | Title case |
-| `playful_soft` | OpenSans-Bold | Title case |
-| `bold_street` | Montserrat-Bold | UPPERCASE |
+**Pipeline:**
+
+1. `generate_image_titles` — 3 packs with copy + `type_system` + `layout` + `kicker`  
+2. `resolve_type_system` / `resolve_layout`  
+3. `plan_title_placement` — measure tracked stack; collision avoid; fallbacks  
+4. `composite_title` / `apply_title_overlay` — scrim + type + brand accent  
+5. Fonts under `data/fonts/`
 
 **Postprocess order** (`routes._postprocess_image`):
 

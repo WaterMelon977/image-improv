@@ -215,7 +215,63 @@ def extract_dominant_colors(image_path: str, count: int = 5) -> list[str]:
         return []
 
 
-# -- title overlay: fixed top band + measure + forbid product/logo --
+# -- title overlay: type systems + layouts + safe top band --
+
+# Layout band heights (fraction of image height)
+LAYOUT_BAND_FRAC = {
+    "hero_headroom": 0.18,
+    "magazine_stack": 0.24,
+}
+DEFAULT_LAYOUT = "hero_headroom"
+ALLOWED_LAYOUTS = set(LAYOUT_BAND_FRAC.keys())
+
+# Three premium type systems (display + support weights)
+TYPE_SYSTEMS: dict[str, dict] = {
+    "editorial_luxe": {
+        "display": "CormorantGaramond-Bold.ttf",
+        "display_fallback": "PlayfairDisplay.ttf",
+        "body": "Montserrat-Light.ttf",
+        "body_fallback": "OpenSans-SemiBold.ttf",
+        "kicker_font": "Montserrat-Light.ttf",
+        "size_scale": 1.12,
+        "uppercase": False,
+        "tracking_px": 1,       # open letter-spacing on display
+        "sub_tracking_px": 2,
+        "kicker_tracking_px": 4,
+        "scrim_strength": 1.15,
+        "rule_style": "hairline",  # thin long rule
+    },
+    "campaign_impact": {
+        "display": "Montserrat-Black.ttf",
+        "display_fallback": "Montserrat-Bold.ttf",
+        "body": "Montserrat-Bold.ttf",
+        "body_fallback": "OpenSans-Bold.ttf",
+        "kicker_font": "Montserrat-Bold.ttf",
+        "size_scale": 1.18,
+        "uppercase": True,
+        "tracking_px": -1,      # tight
+        "sub_tracking_px": 1,
+        "kicker_tracking_px": 3,
+        "scrim_strength": 1.25,
+        "rule_style": "bar",    # short thick accent
+    },
+    "modern_dtc": {
+        "display": "Outfit-Bold.ttf",
+        "display_fallback": "DMSans-Bold.ttf",
+        "body": "Outfit-Regular.ttf",
+        "body_fallback": "DMSans-Regular.ttf",
+        "kicker_font": "Outfit-Regular.ttf",
+        "size_scale": 1.08,
+        "uppercase": False,
+        "tracking_px": 0,
+        "sub_tracking_px": 1,
+        "kicker_tracking_px": 3,
+        "scrim_strength": 1.0,
+        "rule_style": "short",
+    },
+}
+ALLOWED_TYPE_SYSTEMS = set(TYPE_SYSTEMS.keys())
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -232,7 +288,6 @@ def _load_font(filename: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.I
             return ImageFont.truetype(str(path), size=size)
         except Exception as e:
             logger.warning("Failed to load font %s: %s", path, e)
-    # Windows fallbacks
     for fallback in (
         r"C:\Windows\Fonts\arialbd.ttf",
         r"C:\Windows\Fonts\segoeuib.ttf",
@@ -245,6 +300,14 @@ def _load_font(filename: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.I
                 continue
     logger.warning("Using Pillow default font (no TTF found)")
     return ImageFont.load_default()
+
+
+def _pick_existing_font(*candidates: str) -> str:
+    fonts = _fonts_dir()
+    for name in candidates:
+        if name and (fonts / name).exists():
+            return name
+    return "OpenSans-Bold.ttf"
 
 
 def resolve_type_mood(type_mood: str | None, brand_voice: list | None = None) -> str:
@@ -274,44 +337,112 @@ def resolve_type_mood(type_mood: str | None, brand_voice: list | None = None) ->
     return "minimal_clean"
 
 
-def _resolve_font_files(type_mood: str) -> tuple[str, str]:
-    """
-    Map type_mood → (display_font, body_font) under data/fonts.
-    Falls back to Open Sans when a pack file is missing.
-    """
-    packs = {
-        "minimal_clean": ("OpenSans-Bold.ttf", "OpenSans-SemiBold.ttf"),
-        "festive_bold": ("Montserrat-Bold.ttf", "OpenSans-SemiBold.ttf"),
-        # Prefer Playfair when present; otherwise Montserrat for a heavier display look
-        "luxury_editorial": ("PlayfairDisplay.ttf", "OpenSans-SemiBold.ttf"),
-        "playful_soft": ("OpenSans-Bold.ttf", "OpenSans-SemiBold.ttf"),
-        "bold_street": ("Montserrat-Bold.ttf", "OpenSans-Bold.ttf"),
+def resolve_type_system(
+    type_system: str | None = None,
+    type_mood: str | None = None,
+    brand_voice: list | None = None,
+) -> str:
+    """Resolve a premium type system id."""
+    sys_id = (type_system or "").strip().lower()
+    if sys_id in ALLOWED_TYPE_SYSTEMS:
+        return sys_id
+
+    mood = resolve_type_mood(type_mood, brand_voice=brand_voice)
+    mood_map = {
+        "luxury_editorial": "editorial_luxe",
+        "minimal_clean": "modern_dtc",
+        "playful_soft": "modern_dtc",
+        "festive_bold": "campaign_impact",
+        "bold_street": "campaign_impact",
     }
-    display, body = packs.get(type_mood, packs["minimal_clean"])
-    fonts = _fonts_dir()
-    if not (fonts / display).exists():
-        # luxury / festive fallbacks
-        if type_mood == "luxury_editorial" and (fonts / "Montserrat-Bold.ttf").exists():
-            display = "Montserrat-Bold.ttf"
-        elif (fonts / "Montserrat-Bold.ttf").exists() and type_mood in ("festive_bold", "bold_street"):
-            display = "Montserrat-Bold.ttf"
-        else:
-            display = "OpenSans-Bold.ttf"
-    if not (fonts / body).exists():
-        body = "OpenSans-SemiBold.ttf" if (fonts / "OpenSans-SemiBold.ttf").exists() else display
-    return display, body
+    voice = " ".join(brand_voice or []).lower()
+    if any(k in voice for k in ("luxury", "elegant", "premium", "refined", "intimate")):
+        return "editorial_luxe"
+    if any(k in voice for k in ("bold", "energetic", "festive", "party", "street")):
+        return "campaign_impact"
+    return mood_map.get(mood, "modern_dtc")
 
 
-def _mood_recipe(type_mood: str) -> dict:
-    """Typography knobs beyond the font file."""
-    recipes = {
-        "minimal_clean": {"size_scale": 1.0, "uppercase": False, "tracking_note": "normal"},
-        "festive_bold": {"size_scale": 1.08, "uppercase": True, "tracking_note": "tight"},
-        "luxury_editorial": {"size_scale": 1.05, "uppercase": False, "tracking_note": "open"},
-        "playful_soft": {"size_scale": 1.0, "uppercase": False, "tracking_note": "normal"},
-        "bold_street": {"size_scale": 1.12, "uppercase": True, "tracking_note": "tight"},
+def resolve_layout(layout: str | None = None, type_system: str | None = None) -> str:
+    lay = (layout or "").strip().lower()
+    if lay in ALLOWED_LAYOUTS:
+        return lay
+    # editorial defaults to magazine stack; impact/dtc to hero
+    if type_system == "editorial_luxe":
+        return "magazine_stack"
+    return DEFAULT_LAYOUT
+
+
+def _resolve_system_fonts(type_system: str) -> dict:
+    cfg = TYPE_SYSTEMS.get(type_system, TYPE_SYSTEMS["modern_dtc"])
+    display = _pick_existing_font(cfg["display"], cfg.get("display_fallback", ""), "Montserrat-Bold.ttf", "OpenSans-Bold.ttf")
+    body = _pick_existing_font(cfg["body"], cfg.get("body_fallback", ""), "OpenSans-SemiBold.ttf", display)
+    kicker = _pick_existing_font(cfg.get("kicker_font", ""), body, "Montserrat-Light.ttf", "OpenSans-SemiBold.ttf")
+    return {
+        **cfg,
+        "display_file": display,
+        "body_file": body,
+        "kicker_file": kicker,
     }
-    return recipes.get(type_mood, recipes["minimal_clean"])
+
+
+def _short_headline_boost(headline: str) -> float:
+    """Billboard scale: fewer words → larger type."""
+    n = len((headline or "").split())
+    if n <= 2:
+        return 1.35
+    if n <= 3:
+        return 1.22
+    if n <= 4:
+        return 1.10
+    return 1.0
+
+
+def _split_headline_lines(headline: str, max_words_per_line: int = 3) -> list[str]:
+    """Balance into 1–2 display lines for premium stacking."""
+    words = (headline or "").split()
+    if len(words) <= max_words_per_line:
+        return [" ".join(words)] if words else [""]
+    # prefer split near middle
+    mid = (len(words) + 1) // 2
+    return [" ".join(words[:mid]), " ".join(words[mid:])]
+
+
+def _text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, tracking: int = 0) -> tuple[int, int]:
+    if not text:
+        return 0, 0
+    if tracking == 0 or len(text) < 2:
+        bb = draw.textbbox((0, 0), text, font=font)
+        return bb[2] - bb[0], bb[3] - bb[1]
+    # measured with tracking
+    x = 0
+    h = 0
+    for i, ch in enumerate(text):
+        bb = draw.textbbox((0, 0), ch, font=font)
+        cw, chh = bb[2] - bb[0], bb[3] - bb[1]
+        x += cw
+        if i < len(text) - 1:
+            x += tracking
+        h = max(h, chh)
+    return x, h
+
+
+def _draw_text_tracked(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    font: ImageFont.ImageFont,
+    fill: tuple,
+    tracking: int = 0,
+):
+    x, y = xy
+    if tracking == 0 or len(text) < 2:
+        draw.text((x, y), text, font=font, fill=fill)
+        return
+    for i, ch in enumerate(text):
+        draw.text((x, y), ch, font=font, fill=fill)
+        bb = draw.textbbox((0, 0), ch, font=font)
+        x += (bb[2] - bb[0]) + tracking
 
 
 def _hex_to_rgb(hex_color: str | None, default: tuple[int, int, int] = (255, 255, 255)) -> tuple[int, int, int]:
@@ -357,36 +488,6 @@ def _logo_forbid_rect(placement: dict | None, w: int, h: int) -> tuple[int, int,
     return (int(x) - pad, int(y) - pad, int(x) + int(lw) + pad, int(y) + int(lh) + pad)
 
 
-def _measure_text_block(
-    draw: ImageDraw.ImageDraw,
-    headline: str,
-    subhead: str,
-    font_h: ImageFont.ImageFont,
-    font_s: ImageFont.ImageFont,
-    gap: int,
-) -> tuple[int, int, list[tuple[str, ImageFont.ImageFont, int]]]:
-    """Return (block_w, block_h, lines as (text, font, y_offset))."""
-    lines: list[tuple[str, ImageFont.ImageFont, int]] = []
-    y = 0
-    max_w = 0
-
-    if headline:
-        bbox = draw.textbbox((0, 0), headline, font=font_h)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        lines.append((headline, font_h, y))
-        max_w = max(max_w, tw)
-        y += th + (gap if subhead else 0)
-
-    if subhead:
-        bbox = draw.textbbox((0, 0), subhead, font=font_s)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        lines.append((subhead, font_s, y))
-        max_w = max(max_w, tw)
-        y += th
-
-    return max_w, y, lines
-
-
 def _score_region(img_rgb: Image.Image, rect: tuple[int, int, int, int]) -> dict:
     """Brightness + clutter (std of luminance) for a crop."""
     x1, y1, x2, y2 = rect
@@ -396,11 +497,8 @@ def _score_region(img_rgb: Image.Image, rect: tuple[int, int, int, int]) -> dict
         return {"brightness": 128.0, "clutter": 999.0}
     crop = img_rgb.crop((x1, y1, x2, y2))
     arr = np.array(crop, dtype=float)
-    # luminance approx
     lum = 0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
-    brightness = float(lum.mean())
-    clutter = float(lum.std())
-    return {"brightness": brightness, "clutter": clutter}
+    return {"brightness": float(lum.mean()), "clutter": float(lum.std())}
 
 
 def _anchor_xy(
@@ -410,24 +508,20 @@ def _anchor_xy(
     w: int,
     h: int,
     padding: int,
+    band_h: int,
 ) -> tuple[int, int]:
-    band_h = int(h * TITLE_BAND_FRAC)
-    # vertical: center block within top band with padding
-    y = max(padding, (band_h - block_h) // 2)
-    y = min(y, max(padding, band_h - block_h - padding // 2))
-
+    y = max(padding, min(padding + int(band_h * 0.08), max(padding, band_h - block_h - padding // 2)))
     if anchor == "top_left":
         x = padding
     elif anchor == "top_right":
         x = w - block_w - padding
-    else:  # top_center
+    else:
         x = (w - block_w) // 2
     x = max(padding, min(x, w - block_w - padding))
     return x, y
 
 
 def _logo_side_penalty(anchor: str, logo_corner: str | None) -> float:
-    """Deprioritize title anchors that sit on the same side as the logo."""
     if not logo_corner:
         return 0.0
     if logo_corner.startswith("top_"):
@@ -440,103 +534,184 @@ def _logo_side_penalty(anchor: str, logo_corner: str | None) -> float:
     return 0.0
 
 
+def _measure_stack(
+    draw: ImageDraw.ImageDraw,
+    layout: str,
+    kicker: str,
+    headline_lines: list[str],
+    subhead: str,
+    font_k: ImageFont.ImageFont,
+    font_h: ImageFont.ImageFont,
+    font_s: ImageFont.ImageFont,
+    tracking_h: int,
+    tracking_s: int,
+    tracking_k: int,
+    fs: int,
+) -> tuple[int, int, dict]:
+    """
+    Measure full type stack. Returns block_w, block_h, geometry meta.
+    """
+    gaps = {
+        "after_kicker": max(6, fs // 5),
+        "between_headline": max(2, fs // 12),
+        "after_headline": max(8, fs // 4),
+        "after_rule": max(6, fs // 6),
+    }
+    y = 0
+    max_w = 0
+    meta: dict = {"lines": []}
+
+    if layout == "magazine_stack" and kicker:
+        tw, th = _text_size(draw, kicker, font_k, tracking_k)
+        meta["lines"].append({"role": "kicker", "text": kicker, "y": y, "h": th, "w": tw})
+        max_w = max(max_w, tw)
+        y += th + gaps["after_kicker"]
+
+    for i, line in enumerate(headline_lines):
+        if not line:
+            continue
+        tw, th = _text_size(draw, line, font_h, tracking_h)
+        meta["lines"].append({"role": "headline", "text": line, "y": y, "h": th, "w": tw})
+        max_w = max(max_w, tw)
+        y += th
+        if i < len(headline_lines) - 1:
+            y += gaps["between_headline"]
+
+    y += gaps["after_headline"]
+    rule_h = max(2, fs // 18) if layout == "magazine_stack" else max(2, fs // 14)
+    meta["rule_y"] = y
+    meta["rule_h"] = rule_h
+    y += rule_h + gaps["after_rule"]
+
+    if subhead:
+        tw, th = _text_size(draw, subhead, font_s, tracking_s)
+        meta["lines"].append({"role": "subhead", "text": subhead, "y": y, "h": th, "w": tw})
+        max_w = max(max_w, tw)
+        y += th
+
+    meta["block_w"] = max_w
+    meta["block_h"] = y
+    return max_w, y, meta
+
+
 def plan_title_placement(
     image_path: str,
     headline: str,
     subhead: str = "",
     type_mood: str = "minimal_clean",
+    type_system: str | None = None,
+    layout: str | None = None,
+    kicker: str = "",
     logo_placement: dict | None = None,
     primary_color: str | None = None,
+    brand_voice: list | None = None,
 ) -> dict:
     """
-    Measure title box, score top-band candidates (L/C/R), forbid product + logo.
-    Returns placement dict used by composite_title.
+    Plan premium title stack: type system + layout template + safe zones.
     """
     logger.info("Planning title placement for: %s", image_path)
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
     padding = int(w * EDGE_PADDING_FRAC)
-    band_h = int(h * TITLE_BAND_FRAC)
     product_rect = _product_forbid_rect(w, h)
     logo_rect = _logo_forbid_rect(logo_placement, w, h)
     logo_corner = (logo_placement or {}).get("best_corner")
 
-    type_mood = resolve_type_mood(type_mood)
-    recipe = _mood_recipe(type_mood)
-    display_file, body_file = _resolve_font_files(type_mood)
+    type_mood = resolve_type_mood(type_mood, brand_voice=brand_voice)
+    type_system = resolve_type_system(type_system, type_mood=type_mood, brand_voice=brand_voice)
+    layout = resolve_layout(layout, type_system=type_system)
+    band_frac = LAYOUT_BAND_FRAC.get(layout, TITLE_BAND_FRAC)
+    band_h = int(h * band_frac)
+    sys_fonts = _resolve_system_fonts(type_system)
 
-    # Apply mood casing before measure/draw
-    render_headline = headline.upper() if recipe["uppercase"] else headline
-    render_subhead = subhead  # keep product/occasion casing on subhead
+    uppercase = bool(sys_fonts.get("uppercase"))
+    render_headline = headline.upper() if uppercase else headline
+    render_subhead = (subhead or "").strip()
+    render_kicker = (kicker or "").strip().upper() if kicker else ""
+    if layout == "magazine_stack" and not render_kicker:
+        render_kicker = "CAMPAIGN"
 
-    # start font size ~4.5% of width for headline, scaled by mood
-    base_size = max(18, int(w * 0.045 * recipe["size_scale"]))
-    sub_size = max(14, int(base_size * 0.55))
+    # multi-line display for magazine / long hooks
+    if layout == "magazine_stack" or len(render_headline.split()) >= 4:
+        headline_lines = _split_headline_lines(render_headline, max_words_per_line=3)
+    else:
+        headline_lines = [render_headline]
 
-    draw = ImageDraw.Draw(img)  # for measuring only
+    boost = _short_headline_boost(render_headline)
+    base_size = max(20, int(w * 0.052 * float(sys_fonts["size_scale"]) * boost))
+    sub_size = max(13, int(base_size * (0.38 if layout == "magazine_stack" else 0.48)))
+    kicker_size = max(11, int(base_size * 0.28))
+
+    tracking_h = int(sys_fonts.get("tracking_px") or 0)
+    tracking_s = int(sys_fonts.get("sub_tracking_px") or 0)
+    tracking_k = int(sys_fonts.get("kicker_tracking_px") or 0)
+
+    draw = ImageDraw.Draw(img)
     anchors = ["top_left", "top_center", "top_right"]
-    # prefer opposite of logo when logo is top
     if logo_corner == "top_right":
         anchors = ["top_left", "top_center", "top_right"]
     elif logo_corner == "top_left":
         anchors = ["top_right", "top_center", "top_left"]
+    # magazine prefers left editorial lockup
+    if layout == "magazine_stack":
+        anchors = ["top_left", "top_center", "top_right"]
 
     use_subhead = bool(render_subhead)
+    use_kicker = layout == "magazine_stack" and bool(render_kicker)
     font_scale = 1.0
     chosen = None
     fallbacks_used: list[str] = []
+    stack_meta = {}
 
-    for attempt in range(6):
-        fs = max(14, int(base_size * font_scale))
-        ss = max(12, int(sub_size * font_scale))
-        font_h = _load_font(display_file, fs)
-        font_s = _load_font(body_file, ss)
-        gap = max(4, int(fs * 0.2))
+    for _attempt in range(8):
+        fs = max(16, int(base_size * font_scale))
+        ss = max(11, int(sub_size * font_scale))
+        ks = max(10, int(kicker_size * font_scale))
+        font_h = _load_font(sys_fonts["display_file"], fs)
+        font_s = _load_font(sys_fonts["body_file"], ss)
+        font_k = _load_font(sys_fonts["kicker_file"], ks)
 
-        block_w, block_h, lines = _measure_text_block(
+        block_w, block_h, stack_meta = _measure_stack(
             draw,
-            render_headline,
+            layout,
+            render_kicker if use_kicker else "",
+            headline_lines,
             render_subhead if use_subhead else "",
+            font_k,
             font_h,
             font_s,
-            gap,
+            tracking_h,
+            tracking_s,
+            tracking_k,
+            fs,
         )
 
-        # title must fit in band height
         if block_h > band_h - padding:
-            font_scale *= 0.85
+            font_scale *= 0.88
             fallbacks_used.append("shrink_for_band_height")
             continue
 
-        # max width ~70% of image
-        max_title_w = int(w * 0.70)
+        max_title_w = int(w * (0.72 if layout == "hero_headroom" else 0.68))
         if block_w > max_title_w:
-            font_scale *= 0.85
+            font_scale *= 0.88
             fallbacks_used.append("shrink_for_width")
             continue
 
         candidates = []
         for anchor in anchors:
-            x, y = _anchor_xy(anchor, block_w, block_h, w, h, padding)
+            x, y = _anchor_xy(anchor, block_w, block_h, w, h, padding, band_h)
             title_rect = (x, y, x + block_w, y + block_h)
-
-            # must stay inside title band
-            if title_rect[3] > band_h + padding // 2:
+            if title_rect[3] > band_h + padding:
                 continue
-
             hits_product = _rects_intersect(title_rect, product_rect, pad=2)
             hits_logo = bool(logo_rect and _rects_intersect(title_rect, logo_rect, pad=2))
             if hits_product or hits_logo:
-                logger.debug(
-                    "Reject %s: product=%s logo=%s rect=%s",
-                    anchor, hits_product, hits_logo, title_rect,
-                )
                 continue
-
             metrics = _score_region(img, title_rect)
             score = metrics["clutter"] + _logo_side_penalty(anchor, logo_corner)
-            # slight preference for top_left when scores close
-            if anchor == "top_left":
+            if layout == "magazine_stack" and anchor == "top_left":
+                score -= 4.0
+            elif anchor == "top_left":
                 score -= 2.0
             candidates.append({
                 "anchor": anchor,
@@ -548,9 +723,12 @@ def plan_title_placement(
                 "clutter": metrics["clutter"],
                 "font_size": fs,
                 "sub_font_size": ss,
+                "kicker_font_size": ks,
                 "block_w": block_w,
                 "block_h": block_h,
                 "use_subhead": use_subhead,
+                "use_kicker": use_kicker,
+                "stack_meta": stack_meta,
             })
 
         if candidates:
@@ -558,28 +736,39 @@ def plan_title_placement(
             chosen = candidates[0]
             break
 
-        # fallback ladder
+        if use_kicker:
+            use_kicker = False
+            fallbacks_used.append("drop_kicker")
+            continue
         if use_subhead:
             use_subhead = False
             fallbacks_used.append("drop_subhead")
             continue
-        font_scale *= 0.85
+        if len(headline_lines) > 1:
+            headline_lines = [" ".join(headline_lines)]
+            fallbacks_used.append("single_line_headline")
+            continue
+        font_scale *= 0.88
         fallbacks_used.append("shrink_retry")
 
     if not chosen:
-        # last resort: force top_left smallest text, ignore product if only logo conflict
         logger.warning("No clean title candidate; forcing top_left minimal")
         fallbacks_used.append("force_top_left")
-        fs = max(12, int(base_size * 0.55))
-        ss = max(10, int(sub_size * 0.55))
-        font_h = _load_font(display_file, fs)
-        font_s = _load_font(body_file, ss)
-        block_w, block_h, _ = _measure_text_block(draw, render_headline, "", font_h, font_s, 4)
-        x, y = _anchor_xy("top_left", block_w, block_h, w, h, padding)
-        # if still hits logo, shift to opposite
+        fs = max(14, int(base_size * 0.55))
+        ss = max(11, int(sub_size * 0.55))
+        ks = max(10, int(kicker_size * 0.55))
+        font_h = _load_font(sys_fonts["display_file"], fs)
+        font_s = _load_font(sys_fonts["body_file"], ss)
+        font_k = _load_font(sys_fonts["kicker_file"], ks)
+        headline_lines = [render_headline]
+        block_w, block_h, stack_meta = _measure_stack(
+            draw, "hero_headroom", "", headline_lines, "",
+            font_k, font_h, font_s, tracking_h, tracking_s, tracking_k, fs,
+        )
+        x, y = _anchor_xy("top_left", block_w, block_h, w, h, padding, band_h)
         title_rect = (x, y, x + block_w, y + block_h)
         if logo_rect and _rects_intersect(title_rect, logo_rect):
-            x, y = _anchor_xy("top_right", block_w, block_h, w, h, padding)
+            x, y = _anchor_xy("top_right", block_w, block_h, w, h, padding, band_h)
             title_rect = (x, y, x + block_w, y + block_h)
             anchor = "top_right"
         else:
@@ -595,30 +784,52 @@ def plan_title_placement(
             "clutter": metrics["clutter"],
             "font_size": fs,
             "sub_font_size": ss,
+            "kicker_font_size": ks,
             "block_w": block_w,
             "block_h": block_h,
             "use_subhead": False,
+            "use_kicker": False,
+            "stack_meta": stack_meta,
         }
+        layout = "hero_headroom"
 
     brightness = chosen["brightness"]
-    # dark text on bright bg, light text on dark bg
     if brightness >= 140:
-        text_rgb = (20, 20, 20)
+        text_rgb = (18, 18, 18)
         shadow_rgb = (255, 255, 255)
         scrim_dark = False
+        kicker_rgb = (60, 60, 60)
     else:
         text_rgb = (255, 255, 255)
         shadow_rgb = (0, 0, 0)
         scrim_dark = True
+        kicker_rgb = (220, 220, 220)
 
-    accent = _hex_to_rgb(primary_color, default=(255, 255, 255) if scrim_dark else (30, 30, 30))
+    accent = _hex_to_rgb(primary_color, default=(255, 255, 255) if scrim_dark else (28, 28, 28))
+
+    # rule width by style
+    rule_style = sys_fonts.get("rule_style", "short")
+    bw = chosen["block_w"]
+    if rule_style == "hairline":
+        rule_w = max(int(bw * 0.55), int(w * 0.14))
+        rule_h = max(1, chosen["font_size"] // 28)
+    elif rule_style == "bar":
+        rule_w = max(int(bw * 0.28), int(w * 0.08))
+        rule_h = max(3, chosen["font_size"] // 12)
+    else:
+        rule_w = max(int(bw * 0.35), int(w * 0.10))
+        rule_h = max(2, chosen["font_size"] // 16)
 
     placement = {
         "headline": render_headline,
         "headline_source": headline,
+        "headline_lines": headline_lines if chosen.get("use_subhead") is not None else headline_lines,
         "subhead": render_subhead if chosen["use_subhead"] else "",
+        "kicker": render_kicker if chosen.get("use_kicker") else "",
         "type_mood": type_mood,
-        "uppercase": recipe["uppercase"],
+        "type_system": type_system,
+        "layout": layout,
+        "uppercase": uppercase,
         "anchor": chosen["anchor"],
         "x": chosen["x"],
         "y": chosen["y"],
@@ -627,12 +838,23 @@ def plan_title_placement(
         "block_h": chosen["block_h"],
         "font_size": chosen["font_size"],
         "sub_font_size": chosen["sub_font_size"],
-        "display_font": display_file,
-        "body_font": body_file,
+        "kicker_font_size": chosen.get("kicker_font_size", 12),
+        "display_font": sys_fonts["display_file"],
+        "body_font": sys_fonts["body_file"],
+        "kicker_font": sys_fonts["kicker_file"],
+        "tracking_px": tracking_h,
+        "sub_tracking_px": tracking_s,
+        "kicker_tracking_px": tracking_k,
         "text_color": list(text_rgb),
+        "kicker_color": list(kicker_rgb),
         "shadow_color": list(shadow_rgb),
         "scrim_dark": scrim_dark,
+        "scrim_strength": float(sys_fonts.get("scrim_strength") or 1.0),
         "accent_color": list(accent),
+        "rule_style": rule_style,
+        "rule_w": rule_w,
+        "rule_h": rule_h,
+        "stack_meta": chosen.get("stack_meta") or stack_meta,
         "brightness": brightness,
         "clutter": chosen["clutter"],
         "product_rect": list(product_rect),
@@ -641,13 +863,25 @@ def plan_title_placement(
         "image_width": w,
         "image_height": h,
         "band_height": band_h,
+        "short_headline_boost": boost,
     }
+    # ensure headline_lines always present for composite
+    placement["headline_lines"] = headline_lines if not chosen.get("use_kicker") and layout != "magazine_stack" else (
+        placement.get("headline_lines") or headline_lines
+    )
+    # fix: always use the lines we measured with
+    sm = chosen.get("stack_meta") or {}
+    hl_from_meta = [ln["text"] for ln in sm.get("lines", []) if ln.get("role") == "headline"]
+    if hl_from_meta:
+        placement["headline_lines"] = hl_from_meta
+
     logger.info(
-        "Title placement: anchor=%s size=%d brightness=%.1f clutter=%.1f fallbacks=%s",
+        "Title placement: system=%s layout=%s anchor=%s size=%d boost=%.2f fallbacks=%s",
+        type_system,
+        layout,
         placement["anchor"],
         placement["font_size"],
-        brightness,
-        chosen["clutter"],
+        boost,
         fallbacks_used,
     )
     return placement
@@ -659,74 +893,111 @@ def composite_title(
     session_id: str,
     output_suffix: str = "final",
 ) -> str:
-    """
-    Draw title (scrim + text + accent) onto base image. Saves as {session_id}_{suffix}.png.
-    """
-    logger.info("Compositing title onto %s session=%s", base_image_path, session_id)
+    """Draw premium title stack (scrim + kicker + display + rule + subhead)."""
+    logger.info(
+        "Compositing title (%s / %s) onto %s",
+        title_placement.get("type_system"),
+        title_placement.get("layout"),
+        base_image_path,
+    )
     base = Image.open(base_image_path).convert("RGBA")
     w, h = base.size
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    band_h = title_placement.get("band_height") or int(h * TITLE_BAND_FRAC)
+    band_h = int(title_placement.get("band_height") or int(h * TITLE_BAND_FRAC))
     scrim_dark = title_placement.get("scrim_dark", True)
+    strength = float(title_placement.get("scrim_strength") or 1.0)
 
-    # soft top scrim for readability
+    # softer, longer top scrim
     scrim = Image.new("RGBA", (w, band_h), (0, 0, 0, 0))
     scrim_draw = ImageDraw.Draw(scrim)
     for row in range(band_h):
         t = 1.0 - (row / max(1, band_h - 1))
-        alpha = int(110 * (t ** 1.2))
+        alpha = int(min(160, 125 * strength) * (t ** 1.35))
         if scrim_dark:
             color = (0, 0, 0, alpha)
         else:
-            color = (255, 255, 255, int(alpha * 0.85))
+            color = (255, 255, 255, int(alpha * 0.9))
         scrim_draw.line([(0, row), (w, row)], fill=color)
     overlay.paste(scrim, (0, 0), scrim)
 
-    font_h = _load_font(title_placement["display_font"], title_placement["font_size"])
-    font_s = _load_font(title_placement["body_font"], title_placement["sub_font_size"])
-    headline = title_placement.get("headline") or ""
-    subhead = title_placement.get("subhead") or ""
-    gap = max(4, int(title_placement["font_size"] * 0.2))
+    fs = int(title_placement["font_size"])
+    font_h = _load_font(title_placement["display_font"], fs)
+    font_s = _load_font(title_placement["body_font"], int(title_placement["sub_font_size"]))
+    font_k = _load_font(
+        title_placement.get("kicker_font") or title_placement["body_font"],
+        int(title_placement.get("kicker_font_size") or max(11, fs // 3)),
+    )
+
     x = int(title_placement["x"])
     y = int(title_placement["y"])
     text_color = tuple(title_placement.get("text_color") or (255, 255, 255)) + (255,)
-    shadow_color = tuple(title_placement.get("shadow_color") or (0, 0, 0)) + (140,)
-    accent = tuple(title_placement.get("accent_color") or (255, 255, 255)) + (220,)
+    kicker_color = tuple(title_placement.get("kicker_color") or text_color[:3]) + (230,)
+    shadow_color = tuple(title_placement.get("shadow_color") or (0, 0, 0)) + (110,)
+    accent = tuple(title_placement.get("accent_color") or (255, 255, 255)) + (230,)
+    tracking_h = int(title_placement.get("tracking_px") or 0)
+    tracking_s = int(title_placement.get("sub_tracking_px") or 0)
+    tracking_k = int(title_placement.get("kicker_tracking_px") or 0)
+    shadow_offset = max(1, fs // 22)
 
-    # soft text shadow for contrast
-    shadow_offset = max(1, title_placement["font_size"] // 18)
+    stack = title_placement.get("stack_meta") or {}
+    lines = stack.get("lines") or []
 
-    def _line_height(text: str, font: ImageFont.ImageFont) -> int:
-        bb = draw.textbbox((0, 0), text, font=font)
-        return bb[3] - bb[1]
+    def _draw_tracked(text: str, font, ly: int, fill, tracking: int, with_shadow: bool = True):
+        if with_shadow:
+            _draw_text_tracked(draw, (x + shadow_offset, ly + shadow_offset), text, font, shadow_color, tracking)
+        _draw_text_tracked(draw, (x, ly), text, font, fill, tracking)
 
-    def _draw_line(text: str, font: ImageFont.ImageFont, ly: int):
-        draw.text((x + shadow_offset, ly + shadow_offset), text, font=font, fill=shadow_color)
-        draw.text((x, ly), text, font=font, fill=text_color)
+    if lines:
+        for ln in lines:
+            role = ln.get("role")
+            text = ln.get("text") or ""
+            ly = y + int(ln.get("y") or 0)
+            if role == "kicker":
+                _draw_tracked(text, font_k, ly, kicker_color, tracking_k, with_shadow=False)
+            elif role == "headline":
+                _draw_tracked(text, font_h, ly, text_color, tracking_h)
+            elif role == "subhead":
+                _draw_tracked(text, font_s, ly, text_color, tracking_s)
+        rule_y = y + int(stack.get("rule_y") or 0)
+    else:
+        # fallback simple draw
+        cy = y
+        kicker = title_placement.get("kicker") or ""
+        if kicker:
+            _draw_tracked(kicker, font_k, cy, kicker_color, tracking_k, with_shadow=False)
+            tw, th = _text_size(draw, kicker, font_k, tracking_k)
+            cy += th + max(6, fs // 5)
+        for line in title_placement.get("headline_lines") or [title_placement.get("headline") or ""]:
+            if not line:
+                continue
+            _draw_tracked(line, font_h, cy, text_color, tracking_h)
+            tw, th = _text_size(draw, line, font_h, tracking_h)
+            cy += th + max(2, fs // 12)
+        rule_y = cy + max(4, fs // 8)
+        sub = title_placement.get("subhead") or ""
+        if sub:
+            # rule then subhead drawn below
+            pass
 
-    cy = y
-    if headline:
-        _draw_line(headline, font_h, cy)
-        cy += _line_height(headline, font_h) + (gap if subhead else 0)
+    rule_h = int(title_placement.get("rule_h") or max(2, fs // 16))
+    rule_w = int(title_placement.get("rule_w") or max(int((title_placement.get("block_w") or 40) * 0.35), 24))
+    if "rule_y" not in stack and lines:
+        rule_y = y + int(stack.get("rule_y") or 0)
+    elif not lines:
+        rule_y = rule_y  # from fallback branch
 
-    if subhead:
-        _draw_line(subhead, font_s, cy)
-        cy += _line_height(subhead, font_s)
+    draw.rectangle([x, rule_y, x + rule_w, rule_y + rule_h], fill=accent)
 
-    # thin accent underline under the text block
-    block_w = int(title_placement.get("block_w") or 0)
-    underline_y = cy + max(4, title_placement["font_size"] // 10)
-    underline_h = max(2, title_placement["font_size"] // 14)
-    underline_w = max(int(block_w * 0.35), min(block_w, int(w * 0.12)))
-    draw.rectangle(
-        [x, underline_y, x + underline_w, underline_y + underline_h],
-        fill=accent,
-    )
+    # if fallback path had subhead after rule
+    if not lines:
+        sub = title_placement.get("subhead") or ""
+        if sub:
+            sy = rule_y + rule_h + max(6, fs // 6)
+            _draw_tracked(sub, font_s, sy, text_color, tracking_s)
 
     composed = Image.alpha_composite(base, overlay)
-
     output_dir = settings.get_image_dir() / "generated"
     output_dir.mkdir(exist_ok=True)
     final_path = output_dir / f"{session_id}_{output_suffix}.png"
@@ -741,22 +1012,25 @@ def apply_title_overlay(
     session_id: str,
     subhead: str = "",
     type_mood: str = "minimal_clean",
+    type_system: str | None = None,
+    layout: str | None = None,
+    kicker: str = "",
     logo_placement: dict | None = None,
     primary_color: str | None = None,
     brand_voice: list | None = None,
 ) -> tuple[str, dict]:
-    """
-    Plan + composite title in one call.
-    Returns (final_path, title_placement_dict).
-    """
-    mood = resolve_type_mood(type_mood, brand_voice=brand_voice)
+    """Plan + composite premium title. Returns (final_path, placement)."""
     placement = plan_title_placement(
         image_path=base_image_path,
         headline=headline,
         subhead=subhead,
-        type_mood=mood,
+        type_mood=type_mood,
+        type_system=type_system,
+        layout=layout,
+        kicker=kicker,
         logo_placement=logo_placement,
         primary_color=primary_color,
+        brand_voice=brand_voice,
     )
     path = composite_title(base_image_path, placement, session_id)
     return path, placement
